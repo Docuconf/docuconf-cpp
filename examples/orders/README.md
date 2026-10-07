@@ -1,0 +1,70 @@
+# orders: a docuconf example
+
+A tiny HTTP service ([cpp-httplib](https://github.com/yhirose/cpp-httplib)) whose configuration is declared
+with docuconf on top of CLI11. It shows:
+
+- six variables declared as CLI11 options, with the docuconf metadata the contract needs (descriptions, a
+  secret, ranges, an enum, a URL scheme, a list and a duration);
+- `GET /healthz`, which returns `ok`, and `GET /config`, which returns the typed configuration as JSON with the
+  secret redacted;
+- the boot check: a bad environment stops the service with every problem listed;
+- [`contract.cue`](contract.cue), exported by the app itself.
+
+| Variable | Type | Rules |
+|---|---|---|
+| `PORT` | int | 1–65535, default 8080 |
+| `LOG_LEVEL` | enum | `debug`, `info`, `warn`, `error`; default `info` |
+| `DATABASE_URL` | url | secret, required, scheme `postgres` |
+| `ALLOWED_ORIGINS` | list of strings (comma-separated) | at least 1 item; default `http://localhost:3000` |
+| `REQUEST_TIMEOUT` | duration (Go syntax, `30s`) | 1s–5m, default `30s` |
+| `WORKER_COUNT` | int | 1–64, default 4 |
+
+Each one is also a command-line flag (`--port`, `--log-level`...), as CLI11 options are; `--help` lists them
+with their environment names.
+
+## Run it locally
+
+From the repository root:
+
+```sh
+cmake -S . -B build -G Ninja && cmake --build build --target orders
+DATABASE_URL=postgres://orders:secret@localhost:5432/orders PORT=8080 ./build/examples/orders/orders
+curl localhost:8080/healthz
+curl localhost:8080/config
+```
+
+The example also builds on its own (`cmake -S examples/orders -B build-orders`), against the SDK in this
+repository.
+
+## When the configuration is wrong
+
+With `PORT=0` and no `DATABASE_URL`, the service does not start. This is the real output:
+
+```text
+$ PORT=0 ./build/examples/orders/orders
+docuconf: 2 configuration problems:
+  PORT: 0 is below min 1 (out_of_range)
+  DATABASE_URL: is required but not set (missing_required)
+$ echo $?
+1
+```
+
+In Kubernetes the same lines go to `/dev/termination-log`, so `kubectl describe pod` shows them.
+
+## Export the contract
+
+```sh
+./build/examples/orders/orders --docuconf-export examples/orders/contract.cue
+```
+
+Export reads only the declaration, never the environment. CI re-exports the contract and fails if it differs
+from the committed file, then vets it with `cue vet -c` against the meta-schema. [`smoke.sh`](smoke.sh) starts
+the service with a valid and an invalid environment and checks both.
+
+## Deploying
+
+The platform validates what it intends to supply against `contract.cue` before anything is deployed: with
+`docuconf vet` and `docuconf render` from [docuconf-go](https://github.com/docuconf/docuconf-go), or with the
+Helm chart in [docuconf-go/helm](https://github.com/docuconf/docuconf-go/tree/main/helm). A missing
+`DATABASE_URL` or `PORT: 0` is then rejected at composition time, and `DATABASE_URL` must come from a Secret
+reference, never a literal. The service checks the same rules again at boot.
