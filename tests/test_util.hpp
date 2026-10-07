@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -55,6 +56,14 @@ inline std::string read(const std::string& p) {
     std::ostringstream ss;
     ss << f.rdbuf();
     return ss.str();
+}
+
+// Replaces the value of metadata.generator.version in an exported contract. It
+// is the project version, which every release PR bumps, so golden comparisons
+// ignore it rather than needing a re-export per release.
+inline std::string without_generator_version(const std::string& cue) {
+    static const std::regex version(R"re((generator:\s*\{[^{}]*?\bversion:\s*)"[^"]*")re");
+    return std::regex_replace(cue, version, "$1\"<generator-version>\"");
 }
 
 // ---- certificates ----
