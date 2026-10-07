@@ -1,0 +1,35 @@
+name: Release
+
+# Pushing a tag vX.Y.Z creates a GitHub release with a source tarball. C++
+# has no central registry; consumers use FetchContent, find_package after
+# installing, or (later) vcpkg and Conan. See RELEASING.md.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the project version
+        run: |
+          version="$(sed -n 's/^  VERSION \([0-9.]*\)$/\1/p' CMakeLists.txt)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match CMakeLists.txt version $version"
+            exit 1
+          fi
+      - name: Build the source tarball
+        run: |
+          name="docuconf-cpp-${GITHUB_REF_NAME#v}"
+          git archive --format=tar.gz --prefix="$name/" -o "$name.tar.gz" "$GITHUB_REF_NAME"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" docuconf-cpp-*.tar.gz docuconf-cpp-*.tar.gz.sha256 \
+            --title "$GITHUB_REF_NAME" --generate-notes
