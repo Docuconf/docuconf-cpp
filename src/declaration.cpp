@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <set>
 
@@ -10,12 +13,25 @@
 namespace docuconf {
 
 Declaration::Declaration(CLI::App& app, std::string service) : app_(app), service_(std::move(service)) {
-    warn_ = [](const std::string& m) { std::cerr << "docuconf: warning: " << m << std::endl; };
+    warn_ = [](const std::string& m) {
+        if (m.rfind("docuconf: ", 0) == 0) std::cerr << m << std::endl;
+        else std::cerr << "docuconf: warning: " << m << std::endl;
+    };
     app_.add_option(kExportFlag, export_path_,
                     "Write the configuration contract (contract.cue) to this path, or - for standard output, "
                     "and exit without reading the environment")
         ->type_name("PATH")
         ->group("docuconf");
+    // --help lists every variable and file input, which are read from the
+    // environment and the filesystem rather than the command line.
+    app_.footer([this] {
+        try {
+            check();
+        } catch (const std::exception&) {
+            // The declaration is reported when the app parses; list what is there.
+        }
+        return help_footer();
+    });
 }
 
 Declaration::~Declaration() = default;
@@ -27,29 +43,90 @@ Declaration& Declaration::app_version(std::string v) {
 
 void Declaration::on_warning(std::function<void(const std::string&)> sink) { warn_ = std::move(sink); }
 
-void Declaration::register_var(std::unique_ptr<VarBase> var) {
-    std::string flag = "--";
-    for (char c : var->spec_.name) flag += c == '_' ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    std::string type_name = to_string(var->spec_.type);
-    std::transform(type_name.begin(), type_name.end(), type_name.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-    // CLI11 finds the raw value (the command line, then the environment);
-    // docuconf parses and checks it with the spec's rules.
-    var->option_ = app_.add_option(flag, var->raw_, var->spec_.description)
-                       ->envname(var->spec_.name)
-                       ->type_name(type_name);
-    vars_.push_back(std::move(var));
-    checked_ = false;
+void Declaration::before_declare(const std::string& name) {
+    if (loaded_)
+        throw DeclarationError({name + ": declared after the configuration was loaded; declare every variable and "
+                                       "file input before DOCUCONF_PARSE (or parse()/load())"});
 }
 
-File* Declaration::new_file(std::string name, FileType type, std::string description) {
+namespace {
+
+std::string upper_type(VarType t) {
+    std::string s = to_string(t);
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return s;
+}
+
+std::vector<std::string> split_names(const std::string& names) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : names) {
+        if (c == ',') {
+            out.push_back(cur);
+            cur.clear();
+        } else if (c != ' ') {
+            cur += c;
+        }
+    }
+    out.push_back(cur);
+    return out;
+}
+
+}  // namespace
+
+void VarBase::make_flag(std::string names, FlagKind kind) {
+    const std::string& name = spec_.name;
+    if (option_) {
+        problems_.push_back(name + ": flag() is called twice");
+        return;
+    }
+    if (names.empty()) {
+        names = "--";
+        for (char c : name) names += c == '_' ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    std::string long_name;
+    for (const auto& n : split_names(names))
+        if (n.rfind("--", 0) == 0 && long_name.empty()) long_name = n;
+    if (kind == FlagKind::Bool && !long_name.empty() && names.find('!') == std::string::npos)
+        names += ",!--no-" + long_name.substr(2);
+    CLI::App& app = decl_->app_;
+    for (auto n : split_names(names)) {
+        if (!n.empty() && n[0] == '!') n.erase(0, 1);
+        if (n.empty() || n[0] != '-') continue;
+        if (app.get_option_no_throw(n) != nullptr) {
+            problems_.push_back(name + ": flag " + n +
+                                " is already a CLI11 option; remove the app.add_option(\"" + n +
+                                "\", ...) or app.add_flag call and keep this variable, or give flag() another "
+                                "name");
+            return;
+        }
+    }
+    try {
+        switch (kind) {
+            case FlagKind::Bool: option_ = app.add_flag(names); break;
+            case FlagKind::List: option_ = app.add_option(names, raw_items_, spec_.description); break;
+            case FlagKind::Scalar: option_ = app.add_option(names, raw_, spec_.description); break;
+        }
+    } catch (const CLI::Error& e) {
+        problems_.push_back(name + ": flag(\"" + names + "\"): " + e.what());
+        option_ = nullptr;
+        return;
+    }
+    option_->description(spec_.description);
+    if (kind != FlagKind::Bool) option_->type_name(upper_type(spec_.type));
+    if (!spec_.group.empty()) option_->group(spec_.group);
+    flag_names_ = long_name.empty() ? split_names(names).front() : long_name;
+}
+
+File& Declaration::new_file(std::string name, FileType type, std::string description) {
+    before_declare(name);
     auto f = std::make_unique<File>();
     f->spec_.name = std::move(name);
     f->spec_.type = type;
     f->spec_.description = std::move(description);
     if (type == FileType::Tls || type == FileType::Keystore) f->spec_.secret = true;
     if (type == FileType::Keystore) f->spec_.format = "pkcs12";
-    File* raw = f.get();
+    File& raw = *f;
     files_.push_back(std::move(f));
     checked_ = false;
     return raw;
@@ -63,9 +140,10 @@ bool Declaration::loaded_present(const void* p) { return lf(p).present; }
 const std::string& Declaration::loaded_path(const void* p) { return lf(p).path; }
 const nlohmann::json& Declaration::loaded_document(const void* p) { return lf(p).document; }
 
-File* Declaration::add_file(std::string name, TlsKeyPair& target, std::string description) {
-    File* f = new_file(std::move(name), FileType::Tls, std::move(description));
-    f->assign_ = [&target](const void* p) {
+#if DOCUCONF_FILE_INPUTS
+File& Declaration::add_file(std::string name, TlsKeyPair& target, std::string description) {
+    File& f = new_file(std::move(name), FileType::Tls, std::move(description));
+    f.assign_ = [&target](const void* p) {
         const auto& l = lf(p);
         target = TlsKeyPair{};
         target.present = l.present;
@@ -78,9 +156,9 @@ File* Declaration::add_file(std::string name, TlsKeyPair& target, std::string de
     return f;
 }
 
-File* Declaration::add_file(std::string name, CaBundle& target, std::string description) {
-    File* f = new_file(std::move(name), FileType::CaBundle, std::move(description));
-    f->assign_ = [&target](const void* p) {
+File& Declaration::add_file(std::string name, CaBundle& target, std::string description) {
+    File& f = new_file(std::move(name), FileType::CaBundle, std::move(description));
+    f.assign_ = [&target](const void* p) {
         const auto& l = lf(p);
         target = CaBundle{};
         target.present = l.present;
@@ -92,9 +170,9 @@ File* Declaration::add_file(std::string name, CaBundle& target, std::string desc
     return f;
 }
 
-File* Declaration::add_file(std::string name, Keystore& target, std::string description) {
-    File* f = new_file(std::move(name), FileType::Keystore, std::move(description));
-    f->assign_ = [&target](const void* p) {
+File& Declaration::add_file(std::string name, Keystore& target, std::string description) {
+    File& f = new_file(std::move(name), FileType::Keystore, std::move(description));
+    f.assign_ = [&target](const void* p) {
         const auto& l = lf(p);
         target = Keystore{};
         target.present = l.present;
@@ -105,9 +183,9 @@ File* Declaration::add_file(std::string name, Keystore& target, std::string desc
     return f;
 }
 
-File* Declaration::add_file(std::string name, TextFile& target, std::string description) {
-    File* f = new_file(std::move(name), FileType::Text, std::move(description));
-    f->assign_ = [&target](const void* p) {
+File& Declaration::add_file(std::string name, TextFile& target, std::string description) {
+    File& f = new_file(std::move(name), FileType::Text, std::move(description));
+    f.assign_ = [&target](const void* p) {
         const auto& l = lf(p);
         target = TextFile{};
         target.present = l.present;
@@ -118,9 +196,9 @@ File* Declaration::add_file(std::string name, TextFile& target, std::string desc
     return f;
 }
 
-File* Declaration::add_file(std::string name, BinaryFile& target, std::string description) {
-    File* f = new_file(std::move(name), FileType::Binary, std::move(description));
-    f->assign_ = [&target](const void* p) {
+File& Declaration::add_file(std::string name, BinaryFile& target, std::string description) {
+    File& f = new_file(std::move(name), FileType::Binary, std::move(description));
+    f.assign_ = [&target](const void* p) {
         const auto& l = lf(p);
         target = BinaryFile{};
         target.present = l.present;
@@ -130,6 +208,7 @@ File* Declaration::add_file(std::string name, BinaryFile& target, std::string de
     };
     return f;
 }
+#endif
 
 namespace {
 
@@ -174,7 +253,7 @@ std::string extension_format(const std::string& path) {
 
 void Declaration::check() {
     if (checked_) return;
-    std::vector<std::string> problems;
+    std::vector<std::string> problems = problems_;
     if (!is_dns_label(service_))
         problems.push_back("service name " + detail::quote(service_) + " must be a DNS label ([a-z0-9-], at most 63)");
     std::set<std::string> names;
@@ -186,8 +265,14 @@ void Declaration::check() {
         problems.insert(problems.end(), v->problems_.begin(), v->problems_.end());
         auto p = detail::validate_var(v->spec_);
         problems.insert(problems.end(), p.begin(), p.end());
-        if (!names.insert(v->spec_.name).second) problems.push_back(v->spec_.name + ": declared twice");
-        if (v->spec_.default_value) v->option_->default_str(display(v->spec_, *v->spec_.default_value));
+        if (!names.insert(v->spec_.name).second)
+            problems.push_back(v->spec_.name + ": declared twice; remove one of the add_var calls");
+        if (v->option_ && v->spec_.secret)
+            problems.push_back(v->spec_.name + ": a secret cannot be a command-line flag (" + v->flag_names_ +
+                               "): it would show in ps and shell history; remove .flag() and set it in the "
+                               "environment");
+        if (v->option_ && v->spec_.default_value)
+            v->option_->default_str(display(v->spec_, *v->spec_.default_value));
         if (looks_like_feature_flag(v->spec_.name))
             warn_(v->spec_.name +
                   " looks like a feature flag; flags that change without a rollout belong in a flag service "
@@ -228,8 +313,69 @@ std::vector<FileSpec> Declaration::file_specs() const {
     return out;
 }
 
-void Declaration::load(const Env& env) {
+namespace {
+
+std::string pad(const std::string& s, std::size_t w) { return s.size() >= w ? s : s + std::string(w - s.size(), ' '); }
+
+std::string join(const std::vector<std::string>& v, const std::string& sep) {
+    std::string out;
+    for (const auto& x : v) out += (out.empty() ? "" : sep) + x;
+    return out;
+}
+
+}  // namespace
+
+std::string Declaration::help_footer() const {
+    std::size_t w = 0;
+    for (const auto& v : vars_) w = std::max(w, v->spec_.name.size());
+    for (const auto& f : files_) w = std::max(w, f->spec_.name.size());
+    w += 2;
+    std::string out;
+    if (!vars_.empty()) {
+        out += "Environment variables:\n";
+        for (const auto& v : vars_) {
+            const VarSpec& s = v->spec_;
+            std::vector<std::string> attrs;
+            if (s.type == VarType::Enum && !s.values.empty()) attrs.push_back("one of " + join(s.values, "|"));
+            else if (s.type == VarType::List)
+                attrs.push_back(std::string("list of ") + (s.items == ItemType::Int ? "int" : "string") +
+                                ", separated by " + detail::quote(s.separator));
+            else attrs.push_back(to_string(s.type));
+            if (s.required) attrs.push_back("REQUIRED");
+            if (s.default_value && !s.secret) attrs.push_back("default " + detail::quote(display(s, *s.default_value)));
+            if (s.secret) attrs.push_back("secret");
+            if (s.deprecated) attrs.push_back("deprecated");
+            if (v->option_) attrs.push_back("or " + v->flag_names_);
+            out += "  " + pad(s.name, w) + s.description + " [" + join(attrs, ", ") + "]\n";
+        }
+    }
+    if (!files_.empty()) {
+        if (!out.empty()) out += "\n";
+        out += "Files:\n";
+        for (const auto& f : files_) {
+            const FileSpec& s = f->spec_;
+            std::vector<std::string> attrs{std::string(to_string(s.type)) + " at " + s.path};
+            if (!s.path_env.empty()) attrs.push_back("path from " + s.path_env);
+            if (s.required) attrs.push_back("REQUIRED");
+            if (s.secret) attrs.push_back("secret");
+            out += "  " + pad(s.name, w) + s.description + " [" + join(attrs, ", ") + "]\n";
+        }
+    }
+    if (!out.empty() && out.back() == '\n') out.pop_back();
+    return out;
+}
+
+void Declaration::load(const Env& env) { load_env(env, {}, false); }
+
+void Declaration::load_env(const Env& env, const std::map<std::string, std::string>& sources, bool process) {
     check();
+    loaded_ = true;
+    std::set<std::string> declared;
+    for (const auto& v : vars_) declared.insert(v->spec_.name);
+    for (const auto& f : files_)
+        if (!f->spec_.path_env.empty()) declared.insert(f->spec_.path_env);
+    for (const auto& w : detail::undeclared_hints(env, declared)) warn_(w);
+
     std::vector<Violation> violations;
     std::vector<std::string> warnings;
     auto specs = var_specs();
@@ -238,7 +384,9 @@ void Declaration::load(const Env& env) {
     auto root = env.find("DOCUCONF_FILE_ROOT");
     auto files = detail::load_files(file_specs(), env, values, root == env.end() ? "" : root->second, violations);
     if (!violations.empty()) {
-        detail::write_termination_log(violations);
+        for (auto& v : violations)
+            if (auto it = sources.find(v.input); it != sources.end()) v.source = it->second;
+        detail::write_termination_log(violations, env, process);
         throw ValidationError(std::move(violations));
     }
     for (auto& v : vars_) {
@@ -263,24 +411,39 @@ void Declaration::parse(int argc, const char* const* argv) {
         throw CLI::Success();
     }
     app_.parse(argc, argv);
-    // CLI11 skips an empty environment variable, but an empty string is a
-    // present value for a string variable (SPEC §5), so docuconf starts
-    // from the process environment and lays CLI11's results over it.
+    // Variables come from the environment. A variable declared with flag()
+    // takes the command line's raw value instead when it is given; docuconf
+    // parses and checks both the same way.
     Env env = detail::process_env();
+    std::map<std::string, std::string> sources;
     for (auto& v : vars_) {
-        if (v->option_->count() > 0) env[v->spec_.name] = v->raw_;
+        if (!v->option_ || v->option_->count() == 0) continue;
+        const auto& results = v->option_->results();
+        if (results.empty()) continue;
+        if (v->spec_.type == VarType::List) {
+            // Each argument is itself split on the separator, as CLI11's
+            // delimiter does, so joining them keeps every item.
+            env[v->spec_.name] = join(results, v->spec_.separator);
+        } else {
+            env[v->spec_.name] = results.back();
+        }
+        sources[v->spec_.name] = v->flag_names_;
     }
-    load(env);
+    load_env(env, sources, true);
 }
 
 bool Declaration::parse_or_exit(int argc, const char* const* argv, int& code, std::ostream& err) {
     try {
         parse(argc, argv);
         return false;
-    } catch (const CLI::ParseError& e) {
+    } catch (const CLI::Error& e) {
         code = app_.exit(e, std::cout, err);
         return true;
     } catch (const ValidationError& e) {
+        err << e.what() << std::endl;
+        code = 1;
+        return true;
+    } catch (const ExportError& e) {
         err << e.what() << std::endl;
         code = 1;
         return true;
@@ -294,12 +457,30 @@ bool Declaration::parse_or_exit(int argc, const char* const* argv, int& code, st
 void Declaration::write_contract(const std::string& path) const {
     std::string cue = export_cue();
     if (path == "-") {
-        std::cout << cue;
+        std::cout << cue << std::flush;
         return;
     }
-    std::ofstream f(path, std::ios::trunc);
-    if (!f) throw std::runtime_error("docuconf: cannot write " + path);
-    f << cue;
+    auto fail = [&](int e) { throw ExportError("docuconf: cannot write " + path + ": " + std::strerror(e)); };
+    // Write next to the target and rename, so a failed export never leaves
+    // a truncated contract behind.
+    std::string tmp = path + ".tmp-docuconf";
+    std::FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) fail(errno);
+    bool ok = std::fwrite(cue.data(), 1, cue.size(), f) == cue.size();
+    int e = errno;
+    if (std::fclose(f) != 0 && ok) {
+        ok = false;
+        e = errno;
+    }
+    if (!ok) {
+        std::remove(tmp.c_str());
+        fail(e);
+    }
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        e = errno;
+        std::remove(tmp.c_str());
+        fail(e);
+    }
 }
 
 }  // namespace docuconf
