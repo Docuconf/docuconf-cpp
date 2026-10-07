@@ -4,6 +4,15 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly against docuconf-go main; push and pull_request use .github/docuconf-go.ref.
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+    inputs:
+      docuconf_go_ref:
+        description: docuconf-go ref to test against (empty means .github/docuconf-go.ref)
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -25,11 +34,20 @@ jobs:
             cxx: clang++
     steps:
       - uses: actions/checkout@v4
-      - name: Check out docuconf-go (meta-schema and conformance cases)
+      - name: Pick the docuconf-go ref
+        id: dcref
+        env:
+          EVENT: ${{ github.event_name }}
+          OVERRIDE: ${{ inputs.docuconf_go_ref }}
+        run: |
+          if [ "$EVENT" = schedule ]; then echo "ref=main" >> "$GITHUB_OUTPUT"
+          elif [ -n "$OVERRIDE" ]; then echo "ref=$OVERRIDE" >> "$GITHUB_OUTPUT"
+          else echo "ref=$(tr -d '[:space:]' < .github/docuconf-go.ref)" >> "$GITHUB_OUTPUT"; fi
+      - name: Check out docuconf-go
         uses: actions/checkout@v4
         with:
           repository: docuconf/docuconf-go
-          ref: main
+          ref: ${{ steps.dcref.outputs.ref }}
           path: docuconf-go
       - name: Install dependencies
         run: |
@@ -52,6 +70,12 @@ jobs:
           DOCUCONF_SPEC_CUE: ${{ github.workspace }}/docuconf-go/spec/cue
           CUE: /home/runner/go/bin/cue
         run: ctest --test-dir build --output-on-failure
+      - name: Run scripts/conformance.sh
+        env:
+          # Reuses the build above.
+          DOCUCONF_BUILD_DIR: build
+          CUE: /home/runner/go/bin/cue
+        run: DOCUCONF_GO_DIR="$GITHUB_WORKSPACE/docuconf-go" scripts/conformance.sh
       - name: cue vet the golden export and the example contract
         run: |
           for f in tests/golden/gateway.cue examples/orders/contract.cue; do
@@ -119,11 +143,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check out docuconf-go (meta-schema)
+      - name: Pick the docuconf-go ref
+        id: dcref
+        env:
+          EVENT: ${{ github.event_name }}
+          OVERRIDE: ${{ inputs.docuconf_go_ref }}
+        run: |
+          if [ "$EVENT" = schedule ]; then echo "ref=main" >> "$GITHUB_OUTPUT"
+          elif [ -n "$OVERRIDE" ]; then echo "ref=$OVERRIDE" >> "$GITHUB_OUTPUT"
+          else echo "ref=$(tr -d '[:space:]' < .github/docuconf-go.ref)" >> "$GITHUB_OUTPUT"; fi
+      - name: Check out docuconf-go
         uses: actions/checkout@v4
         with:
           repository: docuconf/docuconf-go
-          ref: main
+          ref: ${{ steps.dcref.outputs.ref }}
           path: docuconf-go
       - name: Install dependencies
         run: |

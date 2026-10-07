@@ -220,6 +220,145 @@ TEST(Load, FloatsIgnoreTheLocale) {
 
 // ---- declaration checks ----
 
+// SPEC §4.3: maxLength on url and json values, itemMinLength and
+// itemMaxLength on the items of a string list, counted in code points.
+struct Lengths {
+    CLI::App app;
+    docuconf::Declaration config{app, "lengths"};
+    std::optional<std::string> callback, db_url, name;
+    std::optional<testutil::RateLimits> limits;
+    std::optional<std::vector<std::string>> branches;
+    Lengths() {
+        config.add_var("CALLBACK", callback, "Where to report each run").schemes({"https"}).max_length(24);
+        config.add_var("DB_URL", db_url, "Database connection string").url().secret().max_length(30);
+        config.add_var("NAME", name, "Display name").max_length(2);
+        config.add_var("LIMITS", limits, "Run limits as a JSON object").max_length(18);
+        config.add_var("BRANCHES", branches, "Branch codes").item_min_length(2).item_max_length(4);
+    }
+};
+
+docuconf::ValidationError lengths_fail(const docuconf::Env& env) {
+    Lengths l;
+    try {
+        l.config.load(env);
+    } catch (const docuconf::ValidationError& e) {
+        return e;
+    }
+    ADD_FAILURE() << "load succeeded, expected violations";
+    return docuconf::ValidationError({});
+}
+
+TEST(Lengths, CountCodePointsNotBytes) {
+    Lengths l;
+    l.config.load({{"CALLBACK", "https://例え.jp/日本語の道/一二三四"},
+                   {"NAME", "日本"},
+                   {"LIMITS", R"({"perMinute":600})"},
+                   {"BRANCHES", "ZÜ01,日本,😀😀"}});
+    EXPECT_EQ(*l.name, "日本");
+    EXPECT_EQ(*l.branches, (std::vector<std::string>{"ZÜ01", "日本", "😀😀"}));
+    EXPECT_EQ(l.limits->per_minute, 600u);
+    EXPECT_EQ(lengths_fail({{"NAME", "日本語"}}).codes_for("NAME"), std::vector<Code>{Code::OutOfRange});
+}
+
+TEST(Lengths, UrlMaxLength) {
+    EXPECT_EQ(lengths_fail({{"CALLBACK", "https://a.example/runs/42"}}).codes_for("CALLBACK"),
+              std::vector<Code>{Code::OutOfRange});
+    EXPECT_EQ(lengths_fail({{"CALLBACK", "https://例え.jp/日本語の道/一二三四五"}}).codes_for("CALLBACK"),
+              std::vector<Code>{Code::OutOfRange});
+    // A too-long secret reports its length, never its value.
+    auto e = lengths_fail({{"DB_URL", "postgres://app:s3cr3t@db:5432/app"}});
+    EXPECT_EQ(e.codes_for("DB_URL"), std::vector<Code>{Code::OutOfRange});
+    std::string what = e.what();
+    EXPECT_NE(what.find("33 characters"), std::string::npos) << what;
+    EXPECT_EQ(what.find("s3cr3t"), std::string::npos) << what;
+}
+
+TEST(Lengths, JsonMaxLengthMeasuresTheValueAsReceived) {
+    // 19 characters with the whitespace, 16 without.
+    EXPECT_EQ(lengths_fail({{"LIMITS", R"({ "perMinute": 60 })"}}).codes_for("LIMITS"),
+              std::vector<Code>{Code::OutOfRange});
+    EXPECT_EQ(lengths_fail({{"LIMITS", "{"}}).codes_for("LIMITS"), std::vector<Code>{Code::InvalidType});
+}
+
+TEST(Lengths, ItemLengths) {
+    EXPECT_EQ(lengths_fail({{"BRANCHES", "BE,ZÜRICH"}}).codes_for("BRANCHES"), std::vector<Code>{Code::OutOfRange});
+    EXPECT_EQ(lengths_fail({{"BRANCHES", "BE,B"}}).codes_for("BRANCHES"), std::vector<Code>{Code::OutOfRange});
+}
+
+TEST(Lengths, ExportedAndVetted) {
+    Lengths l;
+    auto j = l.config.export_json();
+    EXPECT_EQ(j["vars"]["CALLBACK"]["maxLength"], 24);
+    EXPECT_EQ(j["vars"]["LIMITS"]["maxLength"], 18);
+    EXPECT_EQ(j["vars"]["BRANCHES"]["itemMinLength"], 2);
+    EXPECT_EQ(j["vars"]["BRANCHES"]["itemMaxLength"], 4);
+    std::optional<std::string> err;
+    try {
+        err = testutil::cue_vet(l.config.export_cue());
+    } catch (const std::runtime_error& e) {
+        GTEST_SKIP() << e.what();
+    }
+    EXPECT_FALSE(err) << *err;
+}
+
+TEST(Lengths, DeclarationErrors) {
+    CLI::App app;
+    docuconf::Declaration d{app, "svc"};
+    std::vector<std::string> a, b;
+    std::string c;
+    d.add_var("A", a, "Min above max").item_min_length(5).item_max_length(4);
+    d.add_var("B", b, "Default item too long").item_max_length(2).default_val(std::vector<std::string>{"ok", "ZÜ01"});
+    d.add_var("C", c, "Default url too long").url().max_length(10).default_val("https://example.com");
+    try {
+        d.check();
+        FAIL() << "expected a DeclarationError";
+    } catch (const docuconf::DeclarationError& err) {
+        std::string what = err.what();
+        EXPECT_NE(what.find("A: itemMinLength is above itemMaxLength"), std::string::npos) << what;
+        EXPECT_NE(what.find("B: default"), std::string::npos) << what;
+        EXPECT_NE(what.find("C: default"), std::string::npos) << what;
+    }
+}
+
+docuconf::Contract lengths_contract(const std::string& vars) {
+    auto j = nlohmann::json::parse(vars);
+    j["apiVersion"] = "docuconf.dev/v1alpha1";
+    j["kind"] = "ConfigContract";
+    return docuconf::Contract::from_json(j);
+}
+
+TEST(Lengths, ContractFirst) {
+    auto contract = lengths_contract(std::string(R"({"vars": {
+        "LIMITS": {"type": "json", "description": "Run limits", "maxLength": 16},
+        "BRANCHES": {"type": "list", "description": "Branch codes", "items": "string", "encoding": "indexed",
+                     "itemMinLength": 2, "itemMaxLength": 4},
+        "CODES": {"type": "list", "description": "Codes as JSON", "items": "string", "encoding": "json",
+                  "itemMaxLength": 4}}})"));
+    auto values = contract.load({{"LIMITS", R"({"n":"日本語の道路xy"})"}, {"BRANCHES__0", "ZÜ01"}, {"CODES", R"(["😀😀😀😀"])"}});
+    EXPECT_EQ(values.to_json()["BRANCHES"], nlohmann::json::parse(R"(["ZÜ01"])"));
+    try {
+        contract.load({{"LIMITS", R"({"max":123456789})"}, {"BRANCHES__0", "BE"}, {"BRANCHES__1", "GENEVA"},
+                       {"CODES", R"(["BE","GENEVA"])"}});
+        FAIL() << "expected violations";
+    } catch (const docuconf::ValidationError& e) {
+        EXPECT_EQ(e.codes_for("LIMITS"), std::vector<Code>{Code::OutOfRange});
+        EXPECT_EQ(e.codes_for("BRANCHES"), std::vector<Code>{Code::OutOfRange});
+        EXPECT_EQ(e.codes_for("CODES"), std::vector<Code>{Code::OutOfRange});
+    }
+    // A json default is measured as compact JSON: {"n":"日本語の道路"} is 14.
+    EXPECT_THROW(lengths_contract(std::string(
+                     R"({"vars": {"L": {"type": "json", "description": "Run limits", "maxLength": 13,
+                         "default": {"n": "日本語の道路"}}}})")),
+                 docuconf::DeclarationError);
+    EXPECT_NO_THROW(lengths_contract(std::string(
+        R"({"vars": {"L": {"type": "json", "description": "Run limits", "maxLength": 14,
+            "default": {"n": "日本語の道路"}}}})")));
+    EXPECT_THROW(lengths_contract(std::string(
+                     R"({"vars": {"L": {"type": "list", "description": "Some ints", "items": "int",
+                         "itemMaxLength": 4}}})")),
+                 docuconf::DeclarationError);
+}
+
 TEST(Declaration, RejectsMistakes) {
     CLI::App app;
     docuconf::Declaration d{app, "svc"};

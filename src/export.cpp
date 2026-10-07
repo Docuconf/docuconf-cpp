@@ -53,6 +53,8 @@ ojson var_json(const VarSpec& s) {
         if (s.max_items) o["maxItems"] = *s.max_items;
         if (s.item_min) o["itemMin"] = *s.item_min;
         if (s.item_max) o["itemMax"] = *s.item_max;
+        if (s.item_min_length) o["itemMinLength"] = *s.item_min_length;
+        if (s.item_max_length) o["itemMaxLength"] = *s.item_max_length;
     }
     if (s.schema) o["schema"] = ojson::parse(s.schema->dump());
     return o;

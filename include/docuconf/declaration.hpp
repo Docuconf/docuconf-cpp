@@ -348,9 +348,12 @@ public:
         spec_.min_length = n;
         return *this;
     }
+    /// The most characters (Unicode code points) a string, url or json
+    /// value may hold. A json value is measured as received, before parsing.
     template <class U = Target>
     Var& max_length(std::uint64_t n) {
-        static_assert(std::is_same_v<U, std::string>, "docuconf: max_length() applies to a std::string variable");
+        static_assert(std::is_same_v<U, std::string> || detail::var_type<U>() == VarType::Json,
+                      "docuconf: max_length() applies to a std::string (string or url) or json variable");
         spec_.max_length = n;
         return *this;
     }
@@ -426,6 +429,24 @@ public:
     Var& item_range(std::int64_t lo, std::int64_t hi) {
         item_min<U>(lo);
         return item_max<U>(hi);
+    }
+    /// The fewest characters (Unicode code points) each item of a string
+    /// list may hold, after the list is split.
+    template <class U = Target>
+    Var& item_min_length(std::uint64_t n) {
+        static_assert(std::is_same_v<typename detail::vector_of<U>::item, std::string>,
+                      "docuconf: item_min_length() applies to a std::vector<std::string>");
+        spec_.item_min_length = n;
+        return *this;
+    }
+    /// The most characters (Unicode code points) each item of a string list
+    /// may hold, after the list is split.
+    template <class U = Target>
+    Var& item_max_length(std::uint64_t n) {
+        static_assert(std::is_same_v<typename detail::vector_of<U>::item, std::string>,
+                      "docuconf: item_max_length() applies to a std::vector<std::string>");
+        spec_.item_max_length = n;
+        return *this;
     }
     /// The csv separator, `,` by default.
     template <class U = Target>

@@ -313,7 +313,8 @@ Known gaps:
 
 Variable methods: `default_val`, `required`, `secret`, `flag`, `min`, `max`, `range`, `min_length`,
 `max_length`, `pattern` (RE2, matches anywhere: anchor it with `^`/`$`), `url`, `schemes`, `values`,
-`min_items`, `max_items`, `item_min`, `item_max`, `item_range`, `delimiter` (the csv separator), `group`,
+`min_items`, `max_items`, `item_min`, `item_max`, `item_range`, `item_min_length`, `item_max_length`,
+`delimiter` (the csv separator), `group`,
 `examples`, `deprecated`, `config_key`, `description`. A method that does not apply to the variable's type
 does not compile (`min_length()` applies to a std::string variable). Durations take `std::chrono` values or Go
 syntax strings (`"30s"`).
@@ -326,6 +327,18 @@ tighter:
 std::vector<std::uint16_t> shards;
 config.add_var("SHARDS", shards, "Shard ids this instance owns").item_range(0, 1023).default_val({});
 ```
+
+| Constraint | Applies to |
+|---|---|
+| `min_length`, `pattern` | `string` |
+| `max_length` | `string`, `url` (the URL as is), `json` (the value as received, before parsing, whitespace included; a default as compact JSON) |
+| `item_min_length`, `item_max_length` | each item of a `std::vector<std::string>`, after splitting, so a separator never counts |
+| `item_min`, `item_max`, `item_range` | each item of an int list |
+
+Lengths count characters, meaning Unicode code points (UTF-8 lead bytes), never bytes: `日本` is 2 characters and
+`ZÜ01` fits an `item_max_length(4)`. A value out of bounds is `out_of_range`; a secret is reported by its length,
+never its value. Item lengths on an int list, or a length method on another type, do not compile; a `min_length`
+or `pattern` on a `url` and `item_min_length` above `item_max_length` are declaration errors.
 
 ### Command-line flags
 
