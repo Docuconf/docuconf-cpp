@@ -134,9 +134,8 @@ TEST(Load, SecretValuesAreNeverPrinted) {
     env["METRICS_TOKEN"] = "short-secret";
     testutil::TempDir logdir;
     std::string log = logdir.str() + "/termination-log";
-    ::setenv("DOCUCONF_TERMINATION_LOG", log.c_str(), 1);
+    env["DOCUCONF_TERMINATION_LOG"] = log;  // read from the env map, not the process
     auto e = load_fails(g, env);
-    ::unsetenv("DOCUCONF_TERMINATION_LOG");
     EXPECT_EQ(e.codes_for("DATABASE_URL"), std::vector<Code>{Code::InvalidScheme});
     EXPECT_EQ(e.codes_for("METRICS_TOKEN"), std::vector<Code>{Code::OutOfRange});
     std::string what = e.what();
@@ -221,6 +220,145 @@ TEST(Load, FloatsIgnoreTheLocale) {
 
 // ---- declaration checks ----
 
+// SPEC §4.3: maxLength on url and json values, itemMinLength and
+// itemMaxLength on the items of a string list, counted in code points.
+struct Lengths {
+    CLI::App app;
+    docuconf::Declaration config{app, "lengths"};
+    std::optional<std::string> callback, db_url, name;
+    std::optional<testutil::RateLimits> limits;
+    std::optional<std::vector<std::string>> branches;
+    Lengths() {
+        config.add_var("CALLBACK", callback, "Where to report each run").schemes({"https"}).max_length(24);
+        config.add_var("DB_URL", db_url, "Database connection string").url().secret().max_length(30);
+        config.add_var("NAME", name, "Display name").max_length(2);
+        config.add_var("LIMITS", limits, "Run limits as a JSON object").max_length(18);
+        config.add_var("BRANCHES", branches, "Branch codes").item_min_length(2).item_max_length(4);
+    }
+};
+
+docuconf::ValidationError lengths_fail(const docuconf::Env& env) {
+    Lengths l;
+    try {
+        l.config.load(env);
+    } catch (const docuconf::ValidationError& e) {
+        return e;
+    }
+    ADD_FAILURE() << "load succeeded, expected violations";
+    return docuconf::ValidationError({});
+}
+
+TEST(Lengths, CountCodePointsNotBytes) {
+    Lengths l;
+    l.config.load({{"CALLBACK", "https://例え.jp/日本語の道/一二三四"},
+                   {"NAME", "日本"},
+                   {"LIMITS", R"({"perMinute":600})"},
+                   {"BRANCHES", "ZÜ01,日本,😀😀"}});
+    EXPECT_EQ(*l.name, "日本");
+    EXPECT_EQ(*l.branches, (std::vector<std::string>{"ZÜ01", "日本", "😀😀"}));
+    EXPECT_EQ(l.limits->per_minute, 600u);
+    EXPECT_EQ(lengths_fail({{"NAME", "日本語"}}).codes_for("NAME"), std::vector<Code>{Code::OutOfRange});
+}
+
+TEST(Lengths, UrlMaxLength) {
+    EXPECT_EQ(lengths_fail({{"CALLBACK", "https://a.example/runs/42"}}).codes_for("CALLBACK"),
+              std::vector<Code>{Code::OutOfRange});
+    EXPECT_EQ(lengths_fail({{"CALLBACK", "https://例え.jp/日本語の道/一二三四五"}}).codes_for("CALLBACK"),
+              std::vector<Code>{Code::OutOfRange});
+    // A too-long secret reports its length, never its value.
+    auto e = lengths_fail({{"DB_URL", "postgres://app:s3cr3t@db:5432/app"}});
+    EXPECT_EQ(e.codes_for("DB_URL"), std::vector<Code>{Code::OutOfRange});
+    std::string what = e.what();
+    EXPECT_NE(what.find("33 characters"), std::string::npos) << what;
+    EXPECT_EQ(what.find("s3cr3t"), std::string::npos) << what;
+}
+
+TEST(Lengths, JsonMaxLengthMeasuresTheValueAsReceived) {
+    // 19 characters with the whitespace, 16 without.
+    EXPECT_EQ(lengths_fail({{"LIMITS", R"({ "perMinute": 60 })"}}).codes_for("LIMITS"),
+              std::vector<Code>{Code::OutOfRange});
+    EXPECT_EQ(lengths_fail({{"LIMITS", "{"}}).codes_for("LIMITS"), std::vector<Code>{Code::InvalidType});
+}
+
+TEST(Lengths, ItemLengths) {
+    EXPECT_EQ(lengths_fail({{"BRANCHES", "BE,ZÜRICH"}}).codes_for("BRANCHES"), std::vector<Code>{Code::OutOfRange});
+    EXPECT_EQ(lengths_fail({{"BRANCHES", "BE,B"}}).codes_for("BRANCHES"), std::vector<Code>{Code::OutOfRange});
+}
+
+TEST(Lengths, ExportedAndVetted) {
+    Lengths l;
+    auto j = l.config.export_json();
+    EXPECT_EQ(j["vars"]["CALLBACK"]["maxLength"], 24);
+    EXPECT_EQ(j["vars"]["LIMITS"]["maxLength"], 18);
+    EXPECT_EQ(j["vars"]["BRANCHES"]["itemMinLength"], 2);
+    EXPECT_EQ(j["vars"]["BRANCHES"]["itemMaxLength"], 4);
+    std::optional<std::string> err;
+    try {
+        err = testutil::cue_vet(l.config.export_cue());
+    } catch (const std::runtime_error& e) {
+        GTEST_SKIP() << e.what();
+    }
+    EXPECT_FALSE(err) << *err;
+}
+
+TEST(Lengths, DeclarationErrors) {
+    CLI::App app;
+    docuconf::Declaration d{app, "svc"};
+    std::vector<std::string> a, b;
+    std::string c;
+    d.add_var("A", a, "Min above max").item_min_length(5).item_max_length(4);
+    d.add_var("B", b, "Default item too long").item_max_length(2).default_val(std::vector<std::string>{"ok", "ZÜ01"});
+    d.add_var("C", c, "Default url too long").url().max_length(10).default_val("https://example.com");
+    try {
+        d.check();
+        FAIL() << "expected a DeclarationError";
+    } catch (const docuconf::DeclarationError& err) {
+        std::string what = err.what();
+        EXPECT_NE(what.find("A: itemMinLength is above itemMaxLength"), std::string::npos) << what;
+        EXPECT_NE(what.find("B: default"), std::string::npos) << what;
+        EXPECT_NE(what.find("C: default"), std::string::npos) << what;
+    }
+}
+
+docuconf::Contract lengths_contract(const std::string& vars) {
+    auto j = nlohmann::json::parse(vars);
+    j["apiVersion"] = "docuconf.dev/v1alpha1";
+    j["kind"] = "ConfigContract";
+    return docuconf::Contract::from_json(j);
+}
+
+TEST(Lengths, ContractFirst) {
+    auto contract = lengths_contract(std::string(R"({"vars": {
+        "LIMITS": {"type": "json", "description": "Run limits", "maxLength": 16},
+        "BRANCHES": {"type": "list", "description": "Branch codes", "items": "string", "encoding": "indexed",
+                     "itemMinLength": 2, "itemMaxLength": 4},
+        "CODES": {"type": "list", "description": "Codes as JSON", "items": "string", "encoding": "json",
+                  "itemMaxLength": 4}}})"));
+    auto values = contract.load({{"LIMITS", R"({"n":"日本語の道路xy"})"}, {"BRANCHES__0", "ZÜ01"}, {"CODES", R"(["😀😀😀😀"])"}});
+    EXPECT_EQ(values.to_json()["BRANCHES"], nlohmann::json::parse(R"(["ZÜ01"])"));
+    try {
+        contract.load({{"LIMITS", R"({"max":123456789})"}, {"BRANCHES__0", "BE"}, {"BRANCHES__1", "GENEVA"},
+                       {"CODES", R"(["BE","GENEVA"])"}});
+        FAIL() << "expected violations";
+    } catch (const docuconf::ValidationError& e) {
+        EXPECT_EQ(e.codes_for("LIMITS"), std::vector<Code>{Code::OutOfRange});
+        EXPECT_EQ(e.codes_for("BRANCHES"), std::vector<Code>{Code::OutOfRange});
+        EXPECT_EQ(e.codes_for("CODES"), std::vector<Code>{Code::OutOfRange});
+    }
+    // A json default is measured as compact JSON: {"n":"日本語の道路"} is 14.
+    EXPECT_THROW(lengths_contract(std::string(
+                     R"({"vars": {"L": {"type": "json", "description": "Run limits", "maxLength": 13,
+                         "default": {"n": "日本語の道路"}}}})")),
+                 docuconf::DeclarationError);
+    EXPECT_NO_THROW(lengths_contract(std::string(
+        R"({"vars": {"L": {"type": "json", "description": "Run limits", "maxLength": 14,
+            "default": {"n": "日本語の道路"}}}})")));
+    EXPECT_THROW(lengths_contract(std::string(
+                     R"({"vars": {"L": {"type": "list", "description": "Some ints", "items": "int",
+                         "itemMaxLength": 4}}})")),
+                 docuconf::DeclarationError);
+}
+
 TEST(Declaration, RejectsMistakes) {
     CLI::App app;
     docuconf::Declaration d{app, "svc"};
@@ -228,9 +366,9 @@ TEST(Declaration, RejectsMistakes) {
     std::string c, e, s;
     d.add_var("bad_name", a, "Lowercase name");
     d.add_var("SHORT", b, "abc");
-    d.add_var("RANGE", c, "Default outside its own constraints")->pattern("^[a-z]+$")->default_val("ABC");
-    d.add_var("LOOKAROUND", e, "A pattern RE2 cannot compile")->pattern("^(?=a)");
-    d.add_var("SECRET_DEFAULT", s, "A secret with a default")->secret()->default_val("x");
+    d.add_var("RANGE", c, "Default outside its own constraints").pattern("^[a-z]+$").default_val("ABC");
+    d.add_var("LOOKAROUND", e, "A pattern RE2 cannot compile").pattern("^(?=a)");
+    d.add_var("SECRET_DEFAULT", s, "A secret with a default").secret().default_val("x");
     try {
         d.check();
         FAIL() << "expected a DeclarationError";
@@ -251,12 +389,12 @@ TEST(Declaration, RejectsBadFileInputs) {
     docuconf::TextFile t1, t2;
     docuconf::CaBundle ca;
     docuconf::Keystore ks;
-    d.add_var("KS_PASSWORD", pw, "Keystore password, not secret")->default_val("");
-    d.add_var("CA_FILE", path_var, "Clashes with a pathEnv")->default_val("");
-    d.add_file("one", t1, "First text file")->path("/etc/svc/a.txt")->reload("watch");
-    d.add_file("two", t2, "Second text file")->path("/etc/svc/b.txt")->dns_names({"x"});
-    d.add_file("ca", ca, "Hides the system trust store")->path("/etc/ssl/certs/private.pem")->path_env("CA_FILE");
-    d.add_file("ks", ks, "Keystore with a plain password")->path("/etc/ks/ks.p12")->password_var("KS_PASSWORD");
+    d.add_var("KS_PASSWORD", pw, "Keystore password, not secret").default_val("");
+    d.add_var("CA_FILE", path_var, "Clashes with a pathEnv").default_val("");
+    d.add_file("one", t1, "First text file").path("/etc/svc/a.txt").reload("watch");
+    d.add_file("two", t2, "Second text file").path("/etc/svc/b.txt").dns_names({"x"});
+    d.add_file("ca", ca, "Hides the system trust store").path("/etc/ssl/certs/private.pem").path_env("CA_FILE");
+    d.add_file("ks", ks, "Keystore with a plain password").path("/etc/ks/ks.p12").password_var("KS_PASSWORD");
     try {
         d.check();
         FAIL() << "expected a DeclarationError";
@@ -277,7 +415,7 @@ TEST(Declaration, WarnsOnFeatureFlagNames) {
     std::vector<std::string> warnings;
     d.on_warning([&](const std::string& w) { warnings.push_back(w); });
     bool on = false;
-    d.add_var("ENABLE_NEW_CHECKOUT", on, "Turns on the new checkout")->default_val(false);
+    d.add_var("ENABLE_NEW_CHECKOUT", on, "Turns on the new checkout").default_val(false);
     d.check();
     ASSERT_EQ(warnings.size(), 1u);
     EXPECT_NE(warnings[0].find("feature flag"), std::string::npos);
@@ -288,7 +426,7 @@ TEST(Declaration, RejectsCli11ConfigFiles) {
     app.set_config("--config");
     docuconf::Declaration d{app, "svc"};
     int port = 0;
-    d.add_var("PORT", port, "HTTP listen port")->default_val(8080);
+    d.add_var("PORT", port, "HTTP listen port").default_val(8080);
     EXPECT_THROW(d.check(), docuconf::DeclarationError);
 }
 
@@ -305,52 +443,239 @@ struct EnvGuard {
     }
 };
 
-TEST(Cli11, ReadsTheEnvironmentThroughEnvname) {
+struct Run {
+    int code = -1;
+    bool exited = false;
+    std::string out, err;
+};
+
+Run run(docuconf::Declaration& d, std::vector<const char*> argv) {
+    Run r;
+    std::ostringstream err;
+    testing::internal::CaptureStdout();
+    r.exited = d.parse_or_exit(static_cast<int>(argv.size()), argv.data(), r.code, err);
+    r.out = testing::internal::GetCapturedStdout();
+    r.err = err.str();
+    return r;
+}
+
+TEST(Cli11, VariablesAreEnvironmentOnlyByDefault) {
     CLI::App app{"svc"};
     docuconf::Declaration d{app, "svc"};
     int port = 0;
     std::string name;
     std::vector<std::string> tags;
-    d.add_var("SVC_PORT", port, "HTTP listen port")->range(1, 65535)->default_val(8080);
-    d.add_var("SVC_NAME", name, "Display name")->default_val("svc");
-    d.add_var("SVC_TAGS", tags, "Tags, comma separated")->default_val(std::vector<std::string>{});
+    d.add_var("SVC_PORT", port, "HTTP listen port").range(1, 65535).default_val(8080);
+    d.add_var("SVC_NAME", name, "Display name").default_val("svc");
+    d.add_var("SVC_TAGS", tags, "Tags, comma separated").default_val(std::vector<std::string>{});
     EnvGuard env;
     env.set("SVC_PORT", "9090");
-    env.set("SVC_NAME", "");  // CLI11 skips an empty value; docuconf keeps it for a string
+    env.set("SVC_NAME", "");  // an empty value is present for a string
     env.set("SVC_TAGS", "a,,b");
     std::vector<const char*> argv = {"svc"};
     d.parse(static_cast<int>(argv.size()), argv.data());
     EXPECT_EQ(port, 9090);
     EXPECT_EQ(name, "");
     EXPECT_EQ(tags, (std::vector<std::string>{"a", "", "b"}));
-    EXPECT_EQ(d.var_specs()[0].name, "SVC_PORT");
-    EXPECT_EQ(app.get_option("--svc-port")->get_envname(), "SVC_PORT");
+    // No command-line option exists, so nothing can override the environment
+    // the platform validated.
+    EXPECT_EQ(app.get_option_no_throw("--svc-port"), nullptr);
+    CLI::App app2{"svc"};
+    docuconf::Declaration d2{app2, "svc"};
+    d2.add_var("SVC_PORT", port, "HTTP listen port").default_val(8080);
+    auto r = run(d2, {"svc", "--svc-port", "1"});
+    EXPECT_TRUE(r.exited);
+    EXPECT_NE(r.code, 0);
 }
 
-TEST(Cli11, CommandLineOverridesTheEnvironmentAndIsChecked) {
+TEST(Cli11, FlagIsOptInWinsOverTheEnvironmentAndIsChecked) {
     CLI::App app{"svc"};
     docuconf::Declaration d{app, "svc"};
     int port = 0;
-    d.add_var("SVC_PORT", port, "HTTP listen port")->range(1, 65535)->default_val(8080);
+    d.add_var("SVC_PORT", port, "HTTP listen port").range(1, 65535).default_val(8080).flag();
     EnvGuard env;
     env.set("SVC_PORT", "9090");
-    std::vector<const char*> argv = {"svc", "--svc-port", "0"};
-    int code = 0;
-    std::ostringstream err;
-    EXPECT_TRUE(d.parse_or_exit(static_cast<int>(argv.size()), argv.data(), code, err));
-    EXPECT_EQ(code, 1);
-    EXPECT_NE(err.str().find("SVC_PORT: 0 is below min 1 (out_of_range)"), std::string::npos) << err.str();
+    auto r = run(d, {"svc", "--svc-port", "0"});
+    EXPECT_TRUE(r.exited);
+    EXPECT_EQ(r.code, 1);
+    EXPECT_NE(r.err.find("SVC_PORT (--svc-port): 0 is below min 1 (out_of_range)"), std::string::npos) << r.err;
+
+    CLI::App app2{"svc"};
+    docuconf::Declaration d2{app2, "svc"};
+    d2.add_var("SVC_PORT", port, "HTTP listen port").range(1, 65535).default_val(8080).flag("-p,--port");
+    r = run(d2, {"svc", "-p", "7070"});
+    EXPECT_FALSE(r.exited) << r.err;
+    EXPECT_EQ(port, 7070);
 }
 
-TEST(Cli11, HelpListsEnvironmentNames) {
+TEST(Cli11, BoolFlagsBehaveLikeCli11Flags) {
+    for (auto [args, want] : std::vector<std::pair<std::vector<const char*>, bool>>{
+             {{"svc", "--debug"}, true},
+             {{"svc", "--no-debug"}, false},
+             {{"svc", "--debug=false"}, false},
+             {{"svc"}, false}}) {
+        CLI::App app{"svc"};
+        docuconf::Declaration d{app, "svc"};
+        bool debug = true;
+        d.add_var("DEBUG", debug, "Serve the debug endpoints").default_val(false).flag();
+        auto r = run(d, args);
+        EXPECT_FALSE(r.exited) << r.err;
+        EXPECT_EQ(debug, want) << args.size();
+    }
+}
+
+TEST(Cli11, ListFlagsTakeSeveralArguments) {
+    CLI::App app{"svc"};
+    docuconf::Declaration d{app, "svc"};
+    std::vector<std::string> origins;
+    std::vector<std::uint16_t> ports;
+    d.add_var("ORIGINS", origins, "Allowed origins").flag();
+    d.add_var("PORTS", ports, "Extra ports").default_val({}).flag();
+    auto r = run(d, {"svc", "--origins", "a", "b", "--origins", "c,d", "--ports", "1", "2"});
+    EXPECT_FALSE(r.exited) << r.err;
+    EXPECT_EQ(origins, (std::vector<std::string>{"a", "b", "c", "d"}));
+    EXPECT_EQ(ports, (std::vector<std::uint16_t>{1, 2}));
+    CLI::App app2{"svc"};
+    docuconf::Declaration d2{app2, "svc"};
+    d2.add_var("PORTS", ports, "Extra ports").flag();
+    r = run(d2, {"svc", "--ports", "1", "70000"});
+    EXPECT_EQ(r.code, 1);
+    EXPECT_NE(r.err.find("PORTS (--ports): "), std::string::npos) << r.err;
+}
+
+TEST(Cli11, SecretCannotBeAFlag) {
+    CLI::App app{"svc"};
+    docuconf::Declaration d{app, "svc"};
+    std::string url;
+    d.add_var("DATABASE_URL", url, "Primary database").secret().flag();
+    auto r = run(d, {"svc"});
+    EXPECT_EQ(r.code, 2);
+    EXPECT_NE(r.err.find("DATABASE_URL: a secret cannot be a command-line flag"), std::string::npos) << r.err;
+}
+
+TEST(Cli11, ClashesAreDeclarationErrorsNotCrashes) {
+    CLI::App app{"svc"};
+    int existing = 0, port = 0, twice = 0;
+    app.add_option("--port", existing, "Existing CLI11 option")->envname("PORT");
+    docuconf::Declaration d{app, "svc"};
+    d.add_var("PORT", port, "HTTP listen port").default_val(8080).flag();
+    d.add_var("TWICE", twice, "Declared twice").default_val(1);
+    d.add_var("TWICE", twice, "Declared twice").default_val(1);
+    auto r = run(d, {"svc"});
+    EXPECT_EQ(r.code, 2);
+    EXPECT_NE(r.err.find("PORT: flag --port is already a CLI11 option"), std::string::npos) << r.err;
+    EXPECT_NE(r.err.find("TWICE: declared twice"), std::string::npos) << r.err;
+}
+
+TEST(Cli11, GroupIsForwardedToTheFlag) {
     CLI::App app{"svc"};
     docuconf::Declaration d{app, "svc"};
     int port = 0;
-    d.add_var("SVC_PORT", port, "HTTP listen port")->default_val(8080);
-    std::string help = app.help();
-    EXPECT_NE(help.find("--svc-port"), std::string::npos) << help;
-    EXPECT_NE(help.find("SVC_PORT"), std::string::npos) << help;
+    d.add_var("PORT", port, "HTTP listen port").group("Server").default_val(8080).flag();
+    EXPECT_EQ(app.get_option("--port")->get_group(), "Server");
+}
+
+TEST(Cli11, DeclaringAfterLoadIsAnError) {
+    CLI::App app{"svc"};
+    docuconf::Declaration d{app, "svc"};
+    int port = 0, late = 0;
+    d.add_var("PORT", port, "HTTP listen port").default_val(8080);
+    d.load({});
+    try {
+        d.add_var("LATE", late, "Declared after parse");
+        FAIL() << "expected a DeclarationError";
+    } catch (const docuconf::DeclarationError& e) {
+        EXPECT_NE(std::string(e.what()).find("LATE: declared after the configuration was loaded"), std::string::npos)
+            << e.what();
+    }
+}
+
+TEST(Cli11, ExportToABadPathIsOneLine) {
+    CLI::App app{"svc"};
+    docuconf::Declaration d{app, "svc"};
+    int port = 0;
+    d.add_var("PORT", port, "HTTP listen port").default_val(8080);
+    auto r = run(d, {"svc", "--docuconf-export", "/nonexistent/dir/c.cue"});
+    EXPECT_EQ(r.code, 1);
+    EXPECT_EQ(r.err, "docuconf: cannot write /nonexistent/dir/c.cue: No such file or directory\n");
+}
+
+TEST(Cli11, ExportWritesThroughARename) {
+    CLI::App app{"svc"};
+    docuconf::Declaration d{app, "svc"};
+    int port = 0;
+    d.add_var("PORT", port, "HTTP listen port").default_val(8080);
+    testutil::TempDir dir;
+    std::string path = dir.str() + "/contract.cue";
+    auto r = run(d, {"svc", "--docuconf-export", path.c_str()});
+    EXPECT_EQ(r.code, 0) << r.err;
+    EXPECT_EQ(testutil::read(path), d.export_cue());
+    EXPECT_FALSE(fs::exists(path + ".tmp-docuconf"));
+}
+
+TEST(Cli11, HelpListsTheEnvironmentAndFiles) {
+    CLI::App app{"svc"};
+    docuconf::Declaration d{app, "svc"};
+    int port = 0;
+    std::string url;
+    docuconf::TextFile license;
+    d.add_var("SVC_PORT", port, "HTTP listen port").default_val(8080);
+    d.add_var("DATABASE_URL", url, "Primary database").secret().schemes({"postgres"});
+    d.add_file("license", license, "License key").path("/etc/svc/license.key").path_env("LICENSE_FILE").required();
+    auto r = run(d, {"svc", "--help"});
+    EXPECT_EQ(r.code, 0);
+    const std::string& help = r.out;
+    EXPECT_NE(help.find("Environment variables:"), std::string::npos) << help;
+    EXPECT_NE(help.find("SVC_PORT      HTTP listen port [int, default \"8080\"]"), std::string::npos) << help;
+    EXPECT_NE(help.find("DATABASE_URL  Primary database [url, REQUIRED, secret]"), std::string::npos) << help;
+    EXPECT_NE(help.find("license       License key [text at /etc/svc/license.key, path from LICENSE_FILE, REQUIRED]"),
+              std::string::npos)
+        << help;
+    EXPECT_EQ(help.find("--svc-port"), std::string::npos) << help;
     EXPECT_NE(help.find("--docuconf-export"), std::string::npos) << help;
+}
+
+TEST(Load, TypoedNamesGetAHintWithoutTheValue) {
+    CLI::App app;
+    docuconf::Declaration d{app, "svc"};
+    std::vector<std::string> warnings;
+    d.on_warning([&](const std::string& w) { warnings.push_back(w); });
+    std::string url, level;
+    int port = 0;
+    d.add_var("DATABASE_URL", url, "Primary database").secret();
+    d.add_var("LOG_LEVEL", level, "Log level").default_val("info");
+    d.add_var("PORT", port, "HTTP listen port").default_val(8080);
+    d.load({{"DATABASE_URL", "postgres://x"},
+            {"DATABSE_URL", "postgres://u:hunter2@db"},
+            {"LOG_LEVL", "debug"},
+            {"HOME", "/root"},
+            {"PATH", "/usr/bin"},
+            {"PORTS", "1"},
+            {"DOCUCONF_FILE_ROOT", "/x"}});
+    std::string all;
+    for (const auto& w : warnings) all += w + "\n";
+    EXPECT_NE(all.find("docuconf: DATABSE_URL is set but not declared; did you mean DATABASE_URL?"), std::string::npos)
+        << all;
+    EXPECT_NE(all.find("docuconf: LOG_LEVL is set but not declared; did you mean LOG_LEVEL?"), std::string::npos) << all;
+    EXPECT_NE(all.find("PORTS is set but not declared; did you mean PORT?"), std::string::npos) << all;
+    EXPECT_EQ(all.find("hunter2"), std::string::npos) << all;
+    EXPECT_EQ(all.find("HOME"), std::string::npos) << all;
+    EXPECT_EQ(all.find("PATH"), std::string::npos) << all;
+}
+
+TEST(Load, IntegerErrorsSayBase10) {
+    CLI::App app;
+    docuconf::Declaration d{app, "svc"};
+    int port = 0;
+    d.add_var("PORT", port, "HTTP listen port").default_val(8080);
+    try {
+        d.load({{"PORT", "0x10"}});
+        FAIL();
+    } catch (const docuconf::ValidationError& e) {
+        EXPECT_NE(std::string(e.what()).find("PORT: \"0x10\" is not a base-10 integer (invalid_type)"),
+                  std::string::npos)
+            << e.what();
+    }
 }
 
 }  // namespace

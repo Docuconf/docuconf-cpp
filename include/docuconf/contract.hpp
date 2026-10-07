@@ -14,6 +14,7 @@
 #pragma once
 
 #include <map>
+#include <ostream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -50,11 +51,15 @@ private:
     std::vector<std::string> secrets_;
 };
 
+/// Prints to_redacted_json(): secrets show as "***".
+std::ostream& operator<<(std::ostream& os, const Values& values);
+
 class Contract {
 public:
     /// Reads a contract from its JSON form. Throws DeclarationError when the
     /// contract is not a valid v1alpha1 ConfigContract.
     static Contract from_json(const std::string& json);
+    static Contract from_json(const char* json);
     static Contract from_json(const nlohmann::json& json);
 
     /// Validates `env`, as the whole environment. Throws ValidationError
@@ -62,7 +67,9 @@ public:
     Values load(const Env& env) const;
 
     /// Validates the process environment. On failure the violations are
-    /// also written to the termination log.
+    /// also written to the termination log. A variable that is set but not
+    /// declared and is close to a declared name gets a warning on standard
+    /// error.
     Values load_process_env() const;
 
     const std::string& name() const { return name_; }

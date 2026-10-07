@@ -41,4 +41,19 @@ echo "$out"
 [[ "$out" == *missing_required* ]] || { echo "expected missing_required"; exit 1; }
 [[ "$out" == *out_of_range* ]] || { echo "expected out_of_range"; exit 1; }
 echo "exit code: $code"
+
+echo "== --port 0 (the opt-in flag) is checked like the environment"
+set +e
+out="$(env -i PATH="$PATH" DATABASE_URL="$secret" "$bin" --port 0 2>&1)"
+code=$?
+set -e
+echo "$out"
+[[ $code -eq 1 ]] || { echo "expected exit code 1, got $code"; exit 1; }
+[[ "$out" == *"PORT (--port): 0 is below min 1 (out_of_range)"* ]] || { echo "expected the flag to be named"; exit 1; }
+[[ "$out" != *"smoke-s3cret"* ]] || { echo "the secret leaked"; exit 1; }
+
+echo "== --help lists the environment"
+help="$(env -i PATH="$PATH" "$bin" --help)"
+[[ "$help" == *"DATABASE_URL"*"REQUIRED, secret"* ]] || { echo "--help does not list DATABASE_URL"; echo "$help"; exit 1; }
+[[ "$help" != *"--database-url"* ]] || { echo "a secret became a flag"; exit 1; }
 echo "smoke: ok"

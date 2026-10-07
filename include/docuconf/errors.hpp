@@ -41,8 +41,11 @@ struct Violation {
     Code code;
     /// A human-readable explanation, without the input name.
     std::string message;
+    /// Where the value came from when it was not the environment: the
+    /// command-line flag, such as `--port`. Empty otherwise.
+    std::string source = {};
 
-    /// `INPUT: message (code)`.
+    /// `INPUT: message (code)`, or `INPUT (--flag): message (code)`.
     std::string str() const;
 };
 
@@ -73,6 +76,13 @@ public:
 
 private:
     std::vector<std::string> problems_;
+};
+
+/// The contract could not be written (`--docuconf-export` to a path that
+/// cannot be created). The message is one line naming the path and why.
+class ExportError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
 };
 
 }  // namespace docuconf

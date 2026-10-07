@@ -2,8 +2,13 @@
 // and the file checks. Not installed.
 #pragma once
 
+#ifndef DOCUCONF_FILE_INPUTS
+#define DOCUCONF_FILE_INPUTS 1
+#endif
+
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -46,7 +51,9 @@ std::optional<Value> parse_wire(const VarSpec& spec, const std::vector<std::stri
 
 /// Checks a typed value against the variable's constraints. Each message
 /// starts with the value, or "value" for a secret.
-std::vector<Problem> check_value(const VarSpec& spec, const Value& v);
+// raw is the wire string a value was parsed from, when there is one: a json
+// value's maxLength measures it.
+std::vector<Problem> check_value(const VarSpec& spec, const Value& v, const std::string* raw = nullptr);
 
 /// Converts a typed JSON value (a default in a contract, a profile
 /// default) to a Value of the variable's type.
@@ -100,9 +107,14 @@ std::vector<Problem> check_keystore(const FileSpec& spec, const std::string& dat
 /// of the messages when `secret` is set.
 std::vector<std::string> validate_schema(const nlohmann::json& schema, const nlohmann::json& doc, bool secret);
 
-/// Writes violations to DOCUCONF_TERMINATION_LOG, or /dev/termination-log
-/// when it exists.
-void write_termination_log(const std::vector<Violation>& violations);
+/// Writes violations to DOCUCONF_TERMINATION_LOG as `env` sets it, or, with
+/// `device`, to /dev/termination-log when it exists.
+void write_termination_log(const std::vector<Violation>& violations, const Env& env, bool device);
+
+/// One warning per variable set in `env` that is not declared but is within
+/// two edits of a declared name (one for names shorter than 6). Values are
+/// never included.
+std::vector<std::string> undeclared_hints(const Env& env, const std::set<std::string>& declared);
 
 /// "docuconf: N configuration problems:\n  ..." for a ValidationError.
 std::string format_violations(const std::vector<Violation>& violations);

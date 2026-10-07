@@ -62,7 +62,8 @@
       "release-type": "simple",
       "package-name": "docuconf-cpp",
       "extra-files": [
-        "CMakeLists.txt"
+        "CMakeLists.txt",
+        "README.md"
       ],
       "include-component-in-tag": false
     }

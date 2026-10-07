@@ -1,6 +1,8 @@
 #include "docuconf/contract.hpp"
 
 #include <algorithm>
+#include <iostream>
+#include <set>
 #include <limits>
 
 #include "docuconf/duration.hpp"
@@ -171,6 +173,8 @@ VarSpec var_from_json(const std::string& name, const json& j, std::vector<std::s
     }
     spec.item_min = f.int64("itemMin");
     spec.item_max = f.int64("itemMax");
+    spec.item_min_length = f.uint("itemMinLength");
+    spec.item_max_length = f.uint("itemMaxLength");
     if (spec.type == VarType::Json) {
         if (const json* s = f.get("schema")) spec.schema = *s;
     }
@@ -196,6 +200,10 @@ Contract Contract::from_json(const std::string& text) {
     if (j.is_discarded()) throw DeclarationError({"contract is not valid JSON"});
     return from_json(j);
 }
+
+std::ostream& operator<<(std::ostream& os, const Values& values) { return os << values.to_redacted_json().dump(); }
+
+Contract Contract::from_json(const char* text) { return from_json(std::string(text)); }
 
 Contract Contract::from_json(const nlohmann::json& top) {
     if (!top.is_object()) throw DeclarationError({"contract must be a JSON object"});
@@ -273,10 +281,14 @@ Values Contract::load(const Env& env) const {
 }
 
 Values Contract::load_process_env() const {
+    Env env = detail::process_env();
+    std::set<std::string> declared;
+    for (const auto& v : vars_) declared.insert(v.name);
+    for (const auto& w : detail::undeclared_hints(env, declared)) std::cerr << w << std::endl;
     try {
-        return load(detail::process_env());
+        return load(env);
     } catch (const ValidationError& e) {
-        detail::write_termination_log(e.violations());
+        detail::write_termination_log(e.violations(), env, true);
         throw;
     }
 }
