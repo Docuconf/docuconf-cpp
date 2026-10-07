@@ -2,6 +2,10 @@
 // and the file checks. Not installed.
 #pragma once
 
+#ifndef DOCUCONF_FILE_INPUTS
+#define DOCUCONF_FILE_INPUTS 1
+#endif
+
 #include <map>
 #include <optional>
 #include <string>
