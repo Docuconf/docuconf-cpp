@@ -286,68 +286,68 @@ struct Gateway {
     Gateway() {
         config.on_warning([this](const std::string& w) { warnings.push_back(w); });
         config.add_var("LOG_LEVEL", log_level, "Minimum log level emitted")
-            ->values({{"debug", LogLevel::Debug}, {"info", LogLevel::Info}, {"warn", LogLevel::Warn},
+            .values({{"debug", LogLevel::Debug}, {"info", LogLevel::Info}, {"warn", LogLevel::Warn},
                       {"error", LogLevel::Error}})
-            ->default_val(LogLevel::Info)
-            ->group("logging");
+            .default_val(LogLevel::Info)
+            .group("logging");
         config.add_var("POD_NAMESPACE", pod_namespace, "Namespace the gateway runs in, for metrics labels");
-        config.add_var("MEMORY_LIMIT", memory_limit, "Soft memory limit, in bytes")->min(1);
+        config.add_var("MEMORY_LIMIT", memory_limit, "Soft memory limit, in bytes").min(1);
         config.add_var("RATE_LIMITS", rate_limits, "Default per-client rate limits")
-            ->default_val(RateLimits{60, std::nullopt});
+            .default_val(RateLimits{60, std::nullopt});
         config.add_var("PARTNER_KEYSTORE_PASSWORD", partner_keystore_password, "Password for the partner mTLS keystore")
-            ->secret();
+            .secret();
         config.add_var("DATABASE_URL", database_url, "Primary Postgres connection string")
-            ->secret()
-            ->schemes({"postgres", "postgresql"});
-        config.add_var("PORT", port, "HTTP listen port")->min(1)->default_val(8080);
+            .secret()
+            .schemes({"postgres", "postgresql"});
+        config.add_var("PORT", port, "HTTP listen port").min(1).default_val(8080);
         config.add_var("REQUEST_TIMEOUT", request_timeout, "Upstream request timeout")
-            ->range("1s", "5m")
-            ->default_val("30s");
+            .range("1s", "5m")
+            .default_val("30s");
         config.add_var("ALLOWED_ORIGINS", allowed_origins, "CORS origins allowed to call the API")
-            ->min_items(1)
-            ->examples({"https://app.example.com"});
-        config.add_var("EXTRA_PORTS", extra_ports, "Extra ports to listen on")->max_items(4)->item_min(1);
-        config.add_var("SHARDS", shards, "Shard ids this instance owns")->item_range(0, 1023)->delimiter(";");
+            .min_items(1)
+            .examples({"https://app.example.com"});
+        config.add_var("EXTRA_PORTS", extra_ports, "Extra ports to listen on").max_items(4).item_min(1);
+        config.add_var("SHARDS", shards, "Shard ids this instance owns").item_range(0, 1023).delimiter(";");
         config.add_var("STRIPE_API_BASE", stripe_api_base, "Stripe API base URL")
-            ->schemes({"https"})
-            ->default_val("https://api.stripe.com");
+            .schemes({"https"})
+            .default_val("https://api.stripe.com");
         config.add_var("TRACE_SAMPLE_RATIO", trace_sample_ratio, "Fraction of requests traced")
-            ->range(0, 1)
-            ->default_val(0.1);
-        config.add_var("DEBUG", debug, "Serve the debug endpoints")->default_val(false);
+            .range(0, 1)
+            .default_val(0.1);
+        config.add_var("DEBUG", debug, "Serve the debug endpoints").default_val(false);
         config.add_var("REGION", region, "Cloud region, such as eu-west-1")
-            ->min_length(4)
-            ->max_length(32)
-            ->pattern("^[a-z]{2}-[a-z]+-[0-9]$")
-            ->deprecated("Read from the node's topology labels instead");
-        config.add_var("METRICS_TOKEN", metrics_token, "API token for the metrics backend")->secret()->min_length(20);
-        config.add_var("CACHE__TTL", cache_ttl, "Cache entry lifetime")->default_val("5m");
-        config.add_var("CACHE__SIZE", cache_size, "Maximum cached entries")->default_val(1000);
+            .min_length(4)
+            .max_length(32)
+            .pattern("^[a-z]{2}-[a-z]+-[0-9]$")
+            .deprecated("Read from the node's topology labels instead");
+        config.add_var("METRICS_TOKEN", metrics_token, "API token for the metrics backend").secret().min_length(20);
+        config.add_var("CACHE__TTL", cache_ttl, "Cache entry lifetime").default_val("5m");
+        config.add_var("CACHE__SIZE", cache_size, "Maximum cached entries").default_val(1000);
 
         config.add_file("serving-tls", serving_tls, "Certificate the gateway serves HTTPS with")
-            ->path("/etc/gateway/tls")
-            ->required()
-            ->dns_names({"gateway.internal", "api.example.com"})
-            ->key_algorithms({"ECDSA", "RSA"})
-            ->min_remaining("720h");
+            .path("/etc/gateway/tls")
+            .required()
+            .dns_names({"gateway.internal", "api.example.com"})
+            .key_algorithms({"ECDSA", "RSA"})
+            .min_remaining("720h");
         config.add_file("routes", routes, "Routing table: path prefixes and their upstreams")
-            ->path("/etc/gateway/routes/routes.yaml")
-            ->path_env("ROUTES_FILE")
-            ->required()
-            ->max_size(65536);
+            .path("/etc/gateway/routes/routes.yaml")
+            .path_env("ROUTES_FILE")
+            .required()
+            .max_size(65536);
         config.add_file("upstream-ca", upstream_ca, "Private CA for upstream services")
-            ->path("/etc/gateway/upstream-ca/ca.pem")
-            ->min_certificates(1);
+            .path("/etc/gateway/upstream-ca/ca.pem")
+            .min_certificates(1);
         config.add_file("partner-keystore", partner_keystore, "Client certificate for mTLS to the partner API")
-            ->path("/etc/gateway/partner/keystore.p12")
-            ->password_var("PARTNER_KEYSTORE_PASSWORD");
+            .path("/etc/gateway/partner/keystore.p12")
+            .password_var("PARTNER_KEYSTORE_PASSWORD");
         config.add_file("license", license, "Gateway licence key")
-            ->path("/etc/gateway/license/license.key")
-            ->required()
-            ->pattern("^[A-Z0-9]{5}(-[A-Z0-9]{5}){3}\\n?$");
+            .path("/etc/gateway/license/license.key")
+            .required()
+            .pattern("^[A-Z0-9]{5}(-[A-Z0-9]{5}){3}\\n?$");
         config.add_file("geoip", geoip, "GeoIP database for country-based routing")
-            ->path("/data/geoip/GeoLite2-City.mmdb")
-            ->max_size(134217728);
+            .path("/data/geoip/GeoLite2-City.mmdb")
+            .max_size(134217728);
     }
 };
 

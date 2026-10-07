@@ -1,16 +1,27 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-find_dependency(CLI11 CONFIG)
-find_dependency(nlohmann_json)
-find_dependency(OpenSSL)
-find_dependency(yaml-cpp)
-find_dependency(tomlplusplus)
+if(NOT TARGET CLI11::CLI11)
+  find_dependency(CLI11 CONFIG)
+endif()
+if(NOT TARGET nlohmann_json::nlohmann_json)
+  find_dependency(nlohmann_json)
+endif()
 find_dependency(nlohmann_json_schema_validator CONFIG)
-find_package(re2 CONFIG QUIET)
+if(NOT TARGET re2::re2)
+  find_package(re2 CONFIG QUIET)
+endif()
 if(NOT TARGET re2::re2)
   find_dependency(PkgConfig)
   pkg_check_modules(RE2 REQUIRED IMPORTED_TARGET GLOBAL re2)
+endif()
+
+# DOCUCONF_FILE_INPUTS was @DOCUCONF_FILE_INPUTS@ when docuconf was built.
+set(docuconf_FILE_INPUTS @DOCUCONF_FILE_INPUTS@)
+if(docuconf_FILE_INPUTS)
+  find_dependency(OpenSSL 3.0)
+  find_dependency(yaml-cpp)
+  find_dependency(tomlplusplus)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/docuconfTargets.cmake")

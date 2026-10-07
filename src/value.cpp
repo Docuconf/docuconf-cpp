@@ -168,7 +168,7 @@ std::optional<std::int64_t> parse_int(const std::string& raw, Problem& err) {
     if (all_digits) {
         err = {Code::OutOfRange, "is outside the 64-bit integer range"};
     } else {
-        err = invalid("is not a 64-bit integer");
+        err = invalid("is not a base-10 integer");
     }
     return std::nullopt;
 }
@@ -224,7 +224,7 @@ std::optional<Value> json_item(ItemType item, std::size_t i, const nlohmann::jso
             return std::nullopt;
         }
     }
-    err = invalid(at + "is not a 64-bit integer");
+    err = invalid(at + "is not an integer");
     return std::nullopt;
 }
 
