@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <numeric>
 
 namespace docuconf {
 namespace {
@@ -48,9 +49,13 @@ std::optional<u64> nanos(const std::string& whole, const std::string& frac, u64 
                         static_cast<long double>(scale);
         u64 add = static_cast<u64>(v);
         if (exact) {
-            // Only whole nanoseconds are representable.
-            if ((static_cast<unsigned __int128>(part) * unit) % scale != 0) return std::nullopt;
-            add = static_cast<u64>((static_cast<unsigned __int128>(part) * unit) / scale);
+            // part * unit / scale, in whole nanoseconds only.
+            u64 g = std::gcd(unit, scale);
+            u64 u = unit / g, sc = scale / g;
+            if (part % sc != 0) return std::nullopt;
+            u64 q = part / sc;
+            if (u != 0 && q > kMax / u) return std::nullopt;
+            add = q * u;
         }
         if (n > kMax - add) return std::nullopt;
         n += add;
