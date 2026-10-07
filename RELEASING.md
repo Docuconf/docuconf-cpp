@@ -29,6 +29,9 @@ Submitting to package managers is a separate step, done once a release exists:
 - **Conan:** add a recipe to [conan-center-index](https://github.com/conan-io/conan-center-index)
   (`recipes/docuconf/all/conanfile.py` and `conandata.yml` pointing at the release tarball and its SHA-256).
 
-Both build with `-DDOCUCONF_FETCH_DEPS=OFF`, so every dependency comes from the package manager.
+Both build with `-DDOCUCONF_FETCH_DEPS=OFF`, so every dependency comes from the package manager. That is also
+what the install rules need: a build that fetched CLI11, nlohmann/json, RE2, yaml-cpp or toml++ generates no
+install rules (only a fetched json-schema-validator is installed alongside docuconf), because the installed
+`docuconfConfig.cmake` finds its dependencies with `find_package`.
 
 The project is MIT licensed (`LICENSE`).

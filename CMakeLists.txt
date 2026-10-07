@@ -13,7 +13,13 @@ endif()
 
 option(DOCUCONF_BUILD_TESTS "Build the docuconf tests" ${DOCUCONF_IS_TOP_LEVEL})
 option(DOCUCONF_BUILD_EXAMPLES "Build the examples" ${DOCUCONF_IS_TOP_LEVEL})
-option(DOCUCONF_INSTALL "Generate the install target" ${DOCUCONF_IS_TOP_LEVEL})
+# Whether DOCUCONF_INSTALL was set by the user or took its default.
+if(NOT DEFINED DOCUCONF_INSTALL)
+  set(DOCUCONF_INSTALL_DEFAULTED ON CACHE INTERNAL "")
+endif()
+option(DOCUCONF_INSTALL
+  "Generate the install target (needs CLI11, nlohmann_json, RE2, yaml-cpp and toml++ from find_package)"
+  ${DOCUCONF_IS_TOP_LEVEL})
 option(DOCUCONF_FETCH_DEPS "Fetch dependencies that are neither targets already nor found by find_package" ON)
 option(DOCUCONF_FILE_INPUTS
   "File inputs (TLS key pairs, CA bundles, keystores, config files). OFF gives an environment-only build without OpenSSL, yaml-cpp and toml++"
@@ -44,6 +50,7 @@ macro(docuconf_fetch name what)
     message(FATAL_ERROR "docuconf: ${what} was not found and DOCUCONF_FETCH_DEPS is OFF. Install it or turn DOCUCONF_FETCH_DEPS on.")
   endif()
   message(STATUS "docuconf: fetching ${what}")
+  list(APPEND DOCUCONF_FETCHED "${what}")
   FetchContent_Declare(${name} ${ARGN})
   FetchContent_MakeAvailable(${name})
 endmacro()
@@ -51,7 +58,6 @@ endmacro()
 if(NOT TARGET CLI11::CLI11)
   find_package(CLI11 2.3 CONFIG QUIET)
   if(NOT TARGET CLI11::CLI11)
-    set(CLI11_INSTALL ${DOCUCONF_INSTALL} CACHE BOOL "" FORCE)
     set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
@@ -66,7 +72,7 @@ endif()
 if(NOT TARGET nlohmann_json::nlohmann_json)
   find_package(nlohmann_json 3.10 QUIET)
   if(NOT TARGET nlohmann_json::nlohmann_json)
-    set(JSON_Install ${DOCUCONF_INSTALL} CACHE BOOL "" FORCE)
+    set(JSON_Install OFF CACHE BOOL "" FORCE)
     set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
     docuconf_fetch(nlohmann_json "nlohmann_json"
       GIT_REPOSITORY https://github.com/nlohmann/json.git
@@ -106,7 +112,12 @@ if(NOT TARGET nlohmann_json_schema_validator::validator AND NOT TARGET nlohmann_
   set(JSON_VALIDATOR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(JSON_VALIDATOR_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(JSON_VALIDATOR_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-  set(JSON_VALIDATOR_INSTALL ${DOCUCONF_INSTALL} CACHE BOOL "" FORCE)
+  # Installed only when docuconf will be (see the install rules below).
+  if(DOCUCONF_INSTALL AND NOT DOCUCONF_FETCHED)
+    set(JSON_VALIDATOR_INSTALL ON CACHE BOOL "" FORCE)
+  else()
+    set(JSON_VALIDATOR_INSTALL OFF CACHE BOOL "" FORCE)
+  endif()
   docuconf_fetch(json_schema_validator "nlohmann_json_schema_validator"
     GIT_REPOSITORY https://github.com/pboettch/json-schema-validator.git
     GIT_TAG c780404a84dd9ba978ba26bc58d17cb43fa7bc80 # 2.4.0
@@ -141,7 +152,7 @@ if(DOCUCONF_FILE_INPUTS)
     set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
     set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
     set(YAML_CPP_FORMAT_SOURCE OFF CACHE BOOL "" FORCE)
-    set(YAML_CPP_INSTALL ${DOCUCONF_INSTALL} CACHE BOOL "" FORCE)
+    set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
     docuconf_fetch(yaml_cpp "yaml-cpp"
       GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
       GIT_TAG 0.8.0
@@ -196,6 +207,24 @@ endif()
 
 if(DOCUCONF_BUILD_EXAMPLES)
   add_subdirectory(examples/orders)
+endif()
+
+# The installed package config finds its dependencies with find_package, so
+# installing needs them to come from find_package too. The one exception is
+# json-schema-validator, which few systems package: when docuconf fetches it,
+# it is installed into the same prefix with its own package config. A build
+# that fetched anything else (a bare machine, an env-only FetchContent) skips
+# the install rules; consume docuconf with FetchContent there instead.
+set(DOCUCONF_NOT_INSTALLABLE ${DOCUCONF_FETCHED})
+list(REMOVE_ITEM DOCUCONF_NOT_INSTALLABLE "nlohmann_json_schema_validator")
+if(DOCUCONF_INSTALL AND DOCUCONF_NOT_INSTALLABLE)
+  string(REPLACE ";" ", " fetched "${DOCUCONF_NOT_INSTALLABLE}")
+  set(why "docuconf: no install rules, because these dependencies were fetched rather than found with find_package: ${fetched}. Install them as packages to use cmake --install and find_package(docuconf), or add docuconf to your project with FetchContent.")
+  if(NOT DOCUCONF_INSTALL_DEFAULTED)
+    message(FATAL_ERROR "${why} (DOCUCONF_INSTALL is ON)")
+  endif()
+  message(STATUS "${why}")
+  set(DOCUCONF_INSTALL OFF)
 endif()
 
 if(DOCUCONF_INSTALL)

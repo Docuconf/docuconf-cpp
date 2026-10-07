@@ -51,8 +51,11 @@ set(DOCUCONF_FILE_INPUTS OFF CACHE BOOL "environment variables only")
 
 Other options: `DOCUCONF_FETCH_DEPS=OFF` never fetches (configure fails instead, naming what is missing). To
 install the library instead, `cmake -S . -B build && cmake --build build && cmake --install build`, then
-`find_package(docuconf 0.1 REQUIRED)`. A top-level build defaults to `CMAKE_BUILD_TYPE=Release`. Dependencies
-docuconf fetched are installed into the same prefix.
+`find_package(docuconf 0.1 REQUIRED)`. A top-level build defaults to `CMAKE_BUILD_TYPE=Release`. Installing
+needs CLI11, nlohmann/json, RE2, yaml-cpp and toml++ from `find_package`, because the installed package config
+looks for them the same way. json-schema-validator is the exception: when docuconf fetched it, it is installed
+into the same prefix. When anything else was fetched, configure prints `docuconf: no install rules ...` and
+skips them, or fails if you passed `-DDOCUCONF_INSTALL=ON`. On such a machine, use `FetchContent` instead.
 
 ## 2. Declare
 
