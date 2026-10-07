@@ -46,7 +46,9 @@ std::optional<Value> parse_wire(const VarSpec& spec, const std::vector<std::stri
 
 /// Checks a typed value against the variable's constraints. Each message
 /// starts with the value, or "value" for a secret.
-std::vector<Problem> check_value(const VarSpec& spec, const Value& v);
+// raw is the wire string a value was parsed from, when there is one: a json
+// value's maxLength measures it.
+std::vector<Problem> check_value(const VarSpec& spec, const Value& v, const std::string* raw = nullptr);
 
 /// Converts a typed JSON value (a default in a contract, a profile
 /// default) to a Value of the variable's type.

@@ -113,8 +113,20 @@ required (at least 5 characters). A variable whose target is not a `std::optiona
 
 Variable methods: `default_val`, `required`, `secret`, `min`, `max`, `range`, `min_length`, `max_length`,
 `pattern` (RE2, matches anywhere: anchor it with `^`/`$`), `url`, `schemes`, `values`, `min_items`, `max_items`,
-`item_min`, `item_max`, `item_range`, `delimiter` (the csv separator), `group`, `examples`, `deprecated`,
-`config_key`, `description`. `option()` returns the underlying `CLI::Option*`.
+`item_min`, `item_max`, `item_range`, `item_min_length`, `item_max_length`, `delimiter` (the csv separator),
+`group`, `examples`, `deprecated`, `config_key`, `description`. `option()` returns the underlying `CLI::Option*`.
+
+| Constraint | Applies to |
+|---|---|
+| `min_length`, `pattern` | `string` |
+| `max_length` | `string`, `url` (the URL as is), `json` (the value as received, before parsing, whitespace included; a default as compact JSON) |
+| `item_min_length`, `item_max_length` | each item of a `std::vector<std::string>`, after splitting, so a separator never counts |
+| `item_min`, `item_max`, `item_range` | each item of an int list |
+
+Lengths count characters, meaning Unicode code points (UTF-8 lead bytes), never bytes: `日本` is 2 characters and
+`ZÜ01` fits an `item_max_length(4)`. A value out of bounds is `out_of_range`; a secret is reported by its length,
+never its value. Length limits on the wrong type, item lengths on an int list and `item_min_length` above
+`item_max_length` are declaration errors.
 
 `item_min`/`item_max` bound each item of an int list; an item outside them is `out_of_range` at boot. They are
 narrowed to the item type, so `std::vector<std::uint16_t>` always exports `itemMin: 0, itemMax: 65535` or
