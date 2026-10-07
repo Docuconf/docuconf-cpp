@@ -53,3 +53,34 @@ foreach(src IN LISTS DOCUCONF_COMPILE_FAIL)
     PASS_REGULAR_EXPRESSION "${expected}"
     RESOURCE_LOCK docuconf_build_dir)
 endforeach()
+
+# Every C++ block in README.md is compiled (and the test block run), so the
+# README cannot drift from the API.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(DOCUCONF_README_DIR ${CMAKE_CURRENT_BINARY_DIR}/readme)
+execute_process(
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/readme_snippets.py
+          ${PROJECT_SOURCE_DIR}/README.md ${DOCUCONF_README_DIR}
+  RESULT_VARIABLE readme_result)
+if(NOT readme_result EQUAL 0)
+  message(FATAL_ERROR "docuconf: cannot extract the README snippets")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  ${PROJECT_SOURCE_DIR}/README.md ${CMAKE_CURRENT_SOURCE_DIR}/readme_snippets.py)
+file(GLOB readme_programs ${DOCUCONF_README_DIR}/program_*.cpp)
+foreach(src IN LISTS readme_programs)
+  get_filename_component(name ${src} NAME_WE)
+  file(STRINGS ${src} needs_files REGEX "^// docuconf-readme: files$")
+  if(needs_files AND NOT DOCUCONF_FILE_INPUTS)
+    continue()
+  endif()
+  add_executable(readme_${name} ${src})
+  target_link_libraries(readme_${name} PRIVATE docuconf::docuconf)
+endforeach()
+file(GLOB readme_tests ${DOCUCONF_README_DIR}/test_*.cpp)
+foreach(src IN LISTS readme_tests)
+  get_filename_component(name ${src} NAME_WE)
+  add_executable(readme_${name} ${src})
+  target_link_libraries(readme_${name} PRIVATE docuconf::docuconf GTest::gtest_main)
+  add_test(NAME readme.${name} COMMAND readme_${name})
+endforeach()

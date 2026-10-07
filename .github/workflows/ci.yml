@@ -35,7 +35,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build clang libcli11-dev nlohmann-json3-dev libre2-dev \
-            libssl-dev libyaml-cpp-dev libtomlplusplus-dev libgtest-dev
+            libssl-dev libyaml-cpp-dev libtomlplusplus-dev libgtest-dev python3
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -45,7 +45,7 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
       - name: Build
         run: cmake --build build
-      - name: Test (including conformance)
+      - name: Test (including conformance, the README blocks and the compile-fail checks)
         env:
           DOCUCONF_CONFORMANCE: ${{ github.workspace }}/docuconf-go/conformance/cases.json
           DOCUCONF_REQUIRE_CONFORMANCE: "1"
@@ -61,6 +61,58 @@ jobs:
             (cd "$dir" && ~/go/bin/cue vet -c ./svc) || { echo "::error file=$f::cue vet failed"; exit 1; }
             echo "$f: ok"
           done
+
+  bare-machine:
+    # A machine with only a compiler, CMake and git: every dependency docuconf
+    # needs is fetched. The environment-only build needs nothing else; file
+    # inputs add OpenSSL.
+    name: bare machine (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: env-only
+            packages: ""
+            flags: --env-only
+          - mode: file-inputs
+            packages: libssl-dev
+            flags: ""
+    steps:
+      - name: Install a compiler, CMake and git only
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ cmake ninja-build git ca-certificates python3 \
+            ${{ matrix.packages }}
+      - uses: actions/checkout@v4
+      - name: Build the README quickstart as a new project
+        run: tests/readme_consumer.sh "$RUNNER_TEMP/consumer" ${{ matrix.flags }} -G Ninja
+
+  env-only:
+    name: environment-only build and tests
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Install a compiler, CMake and git only
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ cmake ninja-build git ca-certificates python3
+      - uses: actions/checkout@v4
+      - name: Check out docuconf-go (conformance cases)
+        uses: actions/checkout@v4
+        with:
+          repository: docuconf/docuconf-go
+          ref: main
+          path: docuconf-go
+      - name: Configure, build and test
+        env:
+          DOCUCONF_CONFORMANCE: ${{ github.workspace }}/docuconf-go/conformance/cases.json
+          DOCUCONF_REQUIRE_CONFORMANCE: "1"
+        run: |
+          cmake -S . -B build -G Ninja -DDOCUCONF_FILE_INPUTS=OFF -DDOCUCONF_BUILD_EXAMPLES=OFF
+          cmake --build build
+          ctest --test-dir build --output-on-failure
 
   example:
     name: orders example
