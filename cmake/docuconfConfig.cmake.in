@@ -1,0 +1,17 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(CLI11 CONFIG)
+find_dependency(nlohmann_json)
+find_dependency(OpenSSL)
+find_dependency(yaml-cpp)
+find_dependency(tomlplusplus)
+find_dependency(nlohmann_json_schema_validator CONFIG)
+find_package(re2 CONFIG QUIET)
+if(NOT TARGET re2::re2)
+  find_dependency(PkgConfig)
+  pkg_check_modules(RE2 REQUIRED IMPORTED_TARGET GLOBAL re2)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/docuconfTargets.cmake")
+check_required_components(docuconf)
