@@ -343,7 +343,7 @@ std::string join(const std::vector<std::string>& v, const std::string& sep) {
 
 }  // namespace
 
-std::vector<Problem> check_value(const VarSpec& spec, const Value& v) {
+std::vector<Problem> check_value(const VarSpec& spec, const Value& v, const std::string* raw) {
     std::string shown = spec.secret ? "value" : show(v);
     std::vector<Problem> out;
     auto push = [&](Code c, const std::string& m) { out.emplace_back(c, shown + " " + m); };
@@ -402,6 +402,9 @@ std::vector<Problem> check_value(const VarSpec& spec, const Value& v) {
             } else if (!spec.schemes.empty() &&
                        std::find(spec.schemes.begin(), spec.schemes.end(), scheme) == spec.schemes.end()) {
                 push(Code::InvalidScheme, "has scheme " + scheme + ", not one of " + join(spec.schemes, ", "));
+            } else if (std::uint64_t n = rune_count(v.as_string()); spec.max_length && n > *spec.max_length) {
+                push(Code::OutOfRange, "is " + std::to_string(n) + " characters, above maxLength " +
+                                           std::to_string(*spec.max_length));
             }
             break;
         }
@@ -429,6 +432,26 @@ std::vector<Problem> check_value(const VarSpec& spec, const Value& v) {
                     return out;
                 }
             }
+            if (spec.items == ItemType::String && (spec.item_min_length || spec.item_max_length)) {
+                // One violation per variable: the first item out of bounds.
+                for (std::size_t i = 0; i < items.size(); ++i) {
+                    std::uint64_t n = rune_count(items[i].as_string());
+                    std::string item = spec.secret ? "item " + std::to_string(i)
+                                                   : "item " + std::to_string(i) + " " + quote(items[i].as_string());
+                    if (spec.item_min_length && n < *spec.item_min_length) {
+                        push(Code::OutOfRange, "has " + item + " of " + std::to_string(n) +
+                                                   " characters, below itemMinLength " +
+                                                   std::to_string(*spec.item_min_length));
+                        break;
+                    }
+                    if (spec.item_max_length && n > *spec.item_max_length) {
+                        push(Code::OutOfRange, "has " + item + " of " + std::to_string(n) +
+                                                   " characters, above itemMaxLength " +
+                                                   std::to_string(*spec.item_max_length));
+                        break;
+                    }
+                }
+            }
             if (spec.items == ItemType::Int) {
                 auto lo = spec.item_min.value_or(std::numeric_limits<std::int64_t>::min());
                 auto hi = spec.item_max.value_or(std::numeric_limits<std::int64_t>::max());
@@ -451,6 +474,19 @@ std::vector<Problem> check_value(const VarSpec& spec, const Value& v) {
         }
         case VarType::Json: {
             if (!v.is_json()) return wrong(), out;
+            if (spec.max_length) {
+                // The wire string as received; a value with no wire form (a
+                // default or a profile value) as the compact JSON the
+                // platform renders.
+                std::uint64_t n = raw ? rune_count(*raw)
+                                      : rune_count(v.as_json().dump(-1, ' ', false,
+                                                                    nlohmann::json::error_handler_t::replace));
+                if (n > *spec.max_length) {
+                    push(Code::OutOfRange, "is " + std::to_string(n) + " characters of JSON, above maxLength " +
+                                               std::to_string(*spec.max_length));
+                    break;
+                }
+            }
             if (spec.schema) {
                 for (const auto& m : validate_schema(*spec.schema, v.as_json(), spec.secret))
                     push(Code::SchemaMismatch, m);
@@ -533,8 +569,10 @@ std::vector<std::string> validate_var(VarSpec& spec) {
     if (spec.secret && !spec.examples.empty()) bad("a secret must not have examples");
     bool numeric = spec.type == VarType::Int || spec.type == VarType::Float || spec.type == VarType::Duration;
     if (!numeric && (spec.min || spec.max)) bad(std::string("min and max do not apply to a ") + to_string(spec.type) + " variable");
-    if (spec.type != VarType::String && (spec.min_length || spec.max_length || spec.pattern))
-        bad(std::string("minLength, maxLength and pattern do not apply to a ") + to_string(spec.type) + " variable");
+    if (spec.type != VarType::String && (spec.min_length || spec.pattern))
+        bad(std::string("minLength and pattern do not apply to a ") + to_string(spec.type) + " variable");
+    if (spec.type != VarType::String && spec.type != VarType::Url && spec.type != VarType::Json && spec.max_length)
+        bad(std::string("maxLength does not apply to a ") + to_string(spec.type) + " variable");
     if (spec.type != VarType::Url && !spec.schemes.empty())
         bad(std::string("schemes do not apply to a ") + to_string(spec.type) + " variable");
     if (spec.type == VarType::Enum && spec.values.empty()) bad("an enum needs at least one value");
@@ -542,11 +580,15 @@ std::vector<std::string> validate_var(VarSpec& spec) {
         bad(std::string("minItems and maxItems do not apply to a ") + to_string(spec.type) + " variable");
     if ((spec.item_min || spec.item_max) && !(spec.type == VarType::List && spec.items == ItemType::Int))
         bad("itemMin and itemMax only apply to a list of ints");
+    if ((spec.item_min_length || spec.item_max_length) && !(spec.type == VarType::List && spec.items == ItemType::String))
+        bad("itemMinLength and itemMaxLength only apply to a list of strings");
     if (spec.type == VarType::List && spec.list_encoding == ListEncoding::Csv && spec.separator.empty())
         bad("separator must not be empty");
     if (spec.min_length && spec.max_length && *spec.min_length > *spec.max_length) bad("minLength is above maxLength");
     if (spec.min_items && spec.max_items && *spec.min_items > *spec.max_items) bad("minItems is above maxItems");
     if (spec.item_min && spec.item_max && *spec.item_min > *spec.item_max) bad("itemMin is above itemMax");
+    if (spec.item_min_length && spec.item_max_length && *spec.item_min_length > *spec.item_max_length)
+        bad("itemMinLength is above itemMaxLength");
     auto kind_ok = [&](const Value& b) {
         switch (spec.type) {
             case VarType::Int: return b.is_int();
@@ -704,7 +746,9 @@ std::map<std::string, std::optional<Value>> load_vars(const std::vector<VarSpec>
             }
             continue;
         }
-        auto problems = check_value(spec, *found);
+        // A json value is measured as received (SPEC §4.3).
+        const std::string* raw = present && raws.size() == 1 ? &raws[0] : nullptr;
+        auto problems = check_value(spec, *found, raw);
         if (problems.empty()) {
             out[spec.name] = std::move(found);
             continue;

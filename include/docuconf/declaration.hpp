@@ -239,6 +239,8 @@ public:
         spec_.min_length = n;
         return this;
     }
+    /// The most characters (Unicode code points) a string, url or json
+    /// value may hold. A json value is measured as received, before parsing.
     Var* max_length(std::uint64_t n) {
         spec_.max_length = n;
         return this;
@@ -296,6 +298,18 @@ public:
         return this;
     }
     Var* item_range(std::int64_t lo, std::int64_t hi) { return item_min(lo)->item_max(hi); }
+    /// The fewest characters (Unicode code points) each item of a string
+    /// list may hold, after the list is split.
+    Var* item_min_length(std::uint64_t n) {
+        spec_.item_min_length = n;
+        return this;
+    }
+    /// The most characters (Unicode code points) each item of a string list
+    /// may hold, after the list is split.
+    Var* item_max_length(std::uint64_t n) {
+        spec_.item_max_length = n;
+        return this;
+    }
     /// The csv separator, `,` by default, as CLI11's `->delimiter()`.
     Var* delimiter(std::string sep) {
         spec_.separator = std::move(sep);

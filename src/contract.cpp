@@ -171,6 +171,8 @@ VarSpec var_from_json(const std::string& name, const json& j, std::vector<std::s
     }
     spec.item_min = f.int64("itemMin");
     spec.item_max = f.int64("itemMax");
+    spec.item_min_length = f.uint("itemMinLength");
+    spec.item_max_length = f.uint("itemMaxLength");
     if (spec.type == VarType::Json) {
         if (const json* s = f.get("schema")) spec.schema = *s;
     }
