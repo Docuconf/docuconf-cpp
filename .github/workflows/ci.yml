@@ -43,7 +43,7 @@ jobs:
           if [ "$EVENT" = schedule ]; then echo "ref=main" >> "$GITHUB_OUTPUT"
           elif [ -n "$OVERRIDE" ]; then echo "ref=$OVERRIDE" >> "$GITHUB_OUTPUT"
           else echo "ref=$(tr -d '[:space:]' < .github/docuconf-go.ref)" >> "$GITHUB_OUTPUT"; fi
-      - name: Check out docuconf-go (meta-schema and conformance cases)
+      - name: Check out docuconf-go
         uses: actions/checkout@v4
         with:
           repository: docuconf/docuconf-go
@@ -70,7 +70,7 @@ jobs:
           DOCUCONF_SPEC_CUE: ${{ github.workspace }}/docuconf-go/spec/cue
           CUE: /home/runner/go/bin/cue
         run: ctest --test-dir build --output-on-failure
-      - name: Conformance (scripts/conformance.sh)
+      - name: Run scripts/conformance.sh
         env:
           # Reuses the build above.
           DOCUCONF_BUILD_DIR: build
@@ -100,7 +100,7 @@ jobs:
           if [ "$EVENT" = schedule ]; then echo "ref=main" >> "$GITHUB_OUTPUT"
           elif [ -n "$OVERRIDE" ]; then echo "ref=$OVERRIDE" >> "$GITHUB_OUTPUT"
           else echo "ref=$(tr -d '[:space:]' < .github/docuconf-go.ref)" >> "$GITHUB_OUTPUT"; fi
-      - name: Check out docuconf-go (meta-schema)
+      - name: Check out docuconf-go
         uses: actions/checkout@v4
         with:
           repository: docuconf/docuconf-go
