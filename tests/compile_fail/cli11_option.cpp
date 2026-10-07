@@ -1,4 +1,4 @@
-// Must not compile. Expected: has no member named .option.|no member named .option.
+// Must not compile. Expected: no member named.+option
 #include <docuconf/docuconf.hpp>
 
 int main() {

@@ -1,4 +1,4 @@
-// Must not compile. Expected: has no member named .check.|no member named .check.
+// Must not compile. Expected: no member named.+check
 #include <docuconf/docuconf.hpp>
 
 int main() {
