@@ -172,10 +172,11 @@ jobs:
         run: |
           cmake -S examples/orders -B build-orders -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build-orders --target orders
+      # metadata.generator.version is ignored: release PRs bump it.
       - name: Re-export the contract and compare
         run: |
           ./build-orders/orders --docuconf-export /tmp/contract.cue
-          diff -u examples/orders/contract.cue /tmp/contract.cue
+          scripts/check-generated.sh --files examples/orders/contract.cue /tmp/contract.cue
       - name: cue vet the contract
         run: |
           dir="$(mktemp -d)"

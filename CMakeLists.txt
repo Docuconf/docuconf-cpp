@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(docuconf
+  # x-release-please-start-version
   VERSION 0.1.0
+  # x-release-please-end
   DESCRIPTION "Typed configuration contracts for CLI11"
   HOMEPAGE_URL "https://github.com/docuconf/docuconf-cpp"
   LANGUAGES CXX)

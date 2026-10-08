@@ -12,7 +12,7 @@ Part of [docuconf](https://github.com/docuconf). See the
 **Example:** [`examples/orders/`](examples/orders/), a small HTTP service with its declaration, exported contract
 and boot-time errors.
 
-> **Status:** `0.1.0`, not released yet. The contract format is a draft (`v1alpha1`) and the API may change.
+> **Status:** `0.1.0`, not released yet. The contract format is a draft (`v1alpha1`) and the API may change. <!-- x-release-please-version -->
 > Licensed under the [MIT licence](LICENSE).
 
 ## 1. Install
@@ -34,7 +34,7 @@ target_link_libraries(billing PRIVATE docuconf::docuconf)
 ```
 
 There is no release tag yet, so `GIT_TAG main` (or a commit SHA) is the install line until the first release;
-the first release will add a `v0.1.0` tag and this section will use it.
+the first release will add a `vX.Y.Z` tag and this section will use it (see [RELEASING.md](RELEASING.md)).
 
 Dependencies come from, in order: targets your project already has (for example your own `FetchContent` of
 CLI11), `find_package` (system packages, vcpkg, Conan), or a fetch at a pinned tag. CLI11, nlohmann/json, RE2,
