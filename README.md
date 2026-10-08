@@ -1,5 +1,7 @@
 # docuconf for C++
 
+Documentation: [docuconf.dev](https://docuconf.dev) · [C++ guide](https://docuconf.dev/languages/cpp/)
+
 Typed configuration contracts for C++ services. Declare your service's environment variables and file inputs
 once, next to the [CLI11](https://github.com/CLIUtils/CLI11) app you already have, and the same declaration
 becomes a contract that your Kubernetes platform checks **before deploy** and your service checks again **at

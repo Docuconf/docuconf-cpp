@@ -5,7 +5,7 @@ project(docuconf
   VERSION 0.1.0
   # x-release-please-end
   DESCRIPTION "Typed configuration contracts for CLI11"
-  HOMEPAGE_URL "https://github.com/docuconf/docuconf-cpp"
+  HOMEPAGE_URL "https://docuconf.dev/languages/cpp/"
   LANGUAGES CXX)
 
 set(DOCUCONF_IS_TOP_LEVEL OFF)
