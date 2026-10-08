@@ -30,7 +30,8 @@ int main(int argc, char** argv) {
     config.add_var("DATABASE_URL", database_url, "Primary Postgres connection string")
         .secret()
         .required()
-        .schemes({"postgres"});
+        .schemes({"postgres"})
+        .max_length(2048);
 
     std::vector<std::string> allowed_origins;
     config.add_var("ALLOWED_ORIGINS", allowed_origins, "Origins allowed to call the API (CORS)")

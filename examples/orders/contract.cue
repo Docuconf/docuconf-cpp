@@ -29,6 +29,7 @@ contract.#Contract & {
 			description: "Primary Postgres connection string"
 			required: true
 			secret: true
+			maxLength: 2048
 			schemes: ["postgres"]
 		}
 		LOG_LEVEL: {
