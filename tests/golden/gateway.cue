@@ -136,6 +136,7 @@ contract.#Contract & {
 		REQUEST_TIMEOUT: {
 			type: "duration"
 			description: "Upstream request timeout"
+			details: "The gateway gives up on an upstream after this long and answers 504.\nRaise it for slow batch endpoints; keep it below the load balancer's\nidle timeout, see `LoadBalancer::idle_timeout`.\n\n# Choosing a value\n\nMeasure the upstream's p99 latency first:\n- p99 latency, from `upstream_seconds`\n- retries, at most `3`\n\n```sh\nhistogram_quantile(0.99, upstream_seconds_bucket)\n```\n\n**Note:** Values are Go durations, such as `1m30s`."
 			default: "30s"
 			min: "1s"
 			max: "5m"
@@ -190,6 +191,7 @@ contract.#Contract & {
 			type: "config"
 			format: "yaml"
 			description: "Routing table: path prefixes and their upstreams"
+			details: "Each route maps a path prefix to an upstream URL.\n\nThe longest prefix wins."
 			required: true
 			path: "/etc/gateway/routes/routes.yaml"
 			pathEnv: "ROUTES_FILE"

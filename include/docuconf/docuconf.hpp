@@ -6,6 +6,7 @@
 
 #include "contract.hpp"
 #include "declaration.hpp"
+#include "doc.hpp"
 #include "duration.hpp"
 #include "errors.hpp"
 #include "files.hpp"

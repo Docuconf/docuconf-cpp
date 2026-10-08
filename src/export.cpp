@@ -25,6 +25,7 @@ ojson var_json(const VarSpec& s) {
     ojson o;
     o["type"] = to_string(s.type);
     o["description"] = s.description;
+    if (s.details) o["details"] = *s.details;
     if (s.required) o["required"] = true;
     if (s.secret) o["secret"] = true;
     if (!s.group.empty()) o["group"] = s.group;
@@ -65,6 +66,7 @@ ojson file_json(const FileSpec& s) {
     o["type"] = to_string(s.type);
     if (s.type == FileType::Config || s.type == FileType::Keystore) o["format"] = s.format;
     o["description"] = s.description;
+    if (s.details) o["details"] = *s.details;
     if (s.required) o["required"] = true;
     if (s.secret) o["secret"] = true;
     o["path"] = s.path;

@@ -559,11 +559,23 @@ std::optional<Value> value_from_json(const VarSpec& spec, const nlohmann::json& 
     return wrong();
 }
 
+std::string check_details(const std::optional<std::string>& details) {
+    if (!details) return "";
+    if (details->find_first_not_of(" \t\n\r\f\v") == std::string::npos) return "details must not be blank";
+    std::size_t n = rune_count(*details);
+    if (n > kMaxDetails)
+        return "details are " + std::to_string(n) + " characters; details may have at most " +
+               std::to_string(kMaxDetails);
+    return "";
+}
+
 std::vector<std::string> validate_var(VarSpec& spec) {
     std::vector<std::string> problems;
     auto bad = [&](const std::string& m) { problems.push_back(spec.name + ": " + m); };
     if (!is_env_name(spec.name)) bad("variable name must match ^[A-Z][A-Z0-9_]*$");
-    if (rune_count(spec.description) < 5) bad("description must be at least 5 characters");
+    if (spec.description.empty()) bad("needs a description: pass it to add_var(), or the doc comment to .doc()");
+    else if (rune_count(spec.description) < 5) bad("description must be at least 5 characters");
+    if (auto d = check_details(spec.details); !d.empty()) bad(d);
     if (spec.required && spec.default_value) bad("a required variable must not have a default");
     if (spec.secret && spec.default_value) bad("a secret must not have a default");
     if (spec.secret && !spec.examples.empty()) bad("a secret must not have examples");

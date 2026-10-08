@@ -15,6 +15,7 @@
 
 #include <re2/re2.h>
 
+#include "docuconf/doc.hpp"
 #include "docuconf/errors.hpp"
 #include "docuconf/spec.hpp"
 
@@ -37,6 +38,9 @@ bool is_env_name(const std::string& s);
 bool is_input_name(const std::string& s);
 bool valid_utf8(const std::string& s);
 std::size_t rune_count(const std::string& s);
+/// Checks an input's details (SPEC §4.2): not blank and at most
+/// kMaxDetails characters. Returns the problem, or an empty string.
+std::string check_details(const std::optional<std::string>& details);
 /// JSON-quoted, for messages.
 std::string quote(const std::string& s);
 /// Shortest round-trip decimal, locale-independent.
