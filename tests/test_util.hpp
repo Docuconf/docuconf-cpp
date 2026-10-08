@@ -309,7 +309,27 @@ struct Gateway {
             .secret()
             .schemes({"postgres", "postgresql"});
         config.add_var("PORT", port, "HTTP listen port").min(1).default_val(8080);
-        config.add_var("REQUEST_TIMEOUT", request_timeout, "Upstream request timeout")
+        config.add_var("REQUEST_TIMEOUT", request_timeout)
+            .doc(R"(
+                /// Upstream request timeout.
+                ///
+                /// The gateway gives up on an upstream after this long and answers 504.
+                /// Raise it for slow batch endpoints; keep it below the load balancer's
+                /// idle timeout, see @ref LoadBalancer::idle_timeout.
+                ///
+                /// # Choosing a value
+                ///
+                /// Measure the upstream's p99 latency first:
+                /// @li p99 latency, from <tt>upstream_seconds</tt>
+                /// @li retries, at most @c 3
+                ///
+                /// @code{.sh}
+                /// histogram_quantile(0.99, upstream_seconds_bucket)
+                /// @endcode
+                ///
+                /// @note Values are Go durations, such as @c 1m30s.
+                /// @param ignored Function tags are dropped.
+            )")
             .range("1s", "5m")
             .default_val("30s");
         config.add_var("ALLOWED_ORIGINS", allowed_origins, "CORS origins allowed to call the API")
@@ -340,6 +360,7 @@ struct Gateway {
             .key_algorithms({"ECDSA", "RSA"})
             .min_remaining("720h");
         config.add_file("routes", routes, "Routing table: path prefixes and their upstreams")
+            .details("Each route maps a path prefix to an upstream URL.\n\nThe longest prefix wins.")
             .path("/etc/gateway/routes/routes.yaml")
             .path_env("ROUTES_FILE")
             .required()

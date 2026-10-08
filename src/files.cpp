@@ -74,7 +74,9 @@ std::vector<std::string> validate_files(std::vector<FileSpec>& files, const std:
         auto bad = [&](const std::string& m) { problems.push_back(f.name + ": " + m); };
         if (!is_input_name(f.name)) bad("file input name must be a DNS label: ^[a-z]([-a-z0-9]{0,40}[a-z0-9])?$");
         if (!names.insert(f.name).second) bad("declared twice");
-        if (rune_count(f.description) < 5) bad("description must be at least 5 characters");
+        if (f.description.empty()) bad("needs a description: pass it to add_file(), or the doc comment to .doc()");
+        else if (rune_count(f.description) < 5) bad("description must be at least 5 characters");
+        if (auto d = check_details(f.details); !d.empty()) bad(d);
         if (!is_abs_path(f.path)) {
             bad("path " + quote(f.path) + " must be absolute and normalised (no ., .., // or trailing /)");
         } else {

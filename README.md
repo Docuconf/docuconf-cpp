@@ -94,6 +94,51 @@ int main(int argc, char** argv) {
 whose methods chain with `.`. The C++ type picks the contract type (see [Types](#types)). A variable that is not
 a `std::optional` and has no `default_val` is required.
 
+### Descriptions and details
+
+Every input needs a `description` (at least 5 characters) and may have `details`: CommonMark, used only in
+generated docs and never at runtime, at most 4000 characters. C++ cannot read a comment at run time, so give
+the input's doc comment to `.doc()`, in Doxygen style, with or without its `///` markers. Its first paragraph is
+the description (on one line, a final period dropped) and the rest the details:
+
+```cpp
+std::uint16_t workers = 4;
+config.add_var("WORKERS", workers)
+    .doc(R"(
+        /// Worker threads.
+        ///
+        /// Each worker holds one database connection, so keep this at or
+        /// below the pool size, @c DB_POOL_SIZE. See @ref Pool::size.
+        ///
+        /// @li one connection per worker
+        /// @li plus one for migrations
+    )")
+    .range(1, 64)
+    .default_val(4);
+```
+
+exports
+
+```cue
+WORKERS: {
+	type: "int"
+	description: "Worker threads"
+	details: "Each worker holds one database connection, so keep this at or\nbelow the pool size, `DB_POOL_SIZE`. See `Pool::size`.\n\n- one connection per worker\n- plus one for migrations"
+	...
+```
+
+Doxygen becomes CommonMark: `@c`, `@p`, `@ref`, `<tt>` and `<code>` become code spans, `@a`/`@e` emphasis and
+`@b` strong, `@code{.lang}`...`@endcode` and `@verbatim` fenced code blocks, `@li` list items, `@note` and
+`@warning` bold labels, and `@param`, `@return` and other function tags are dropped. Markdown in the comment is
+kept as written. `docuconf::split_doc()` is the same split, on its own. A comment that starts with a list or a
+code block is all description. The explicit forms are the third argument of `add_var`/`add_file` (or
+`.description()`) and `.details("...")`. Declaration and export fail when an input has no description, or
+details that are blank or over 4000 characters (Unicode code points). Contract-first mode accepts `details` and
+ignores them.
+
+`docuconf docs` (in the [docuconf CLI](https://github.com/docuconf/docuconf-go)) generates CONFIG.md and
+CONFIG.agents.md from the exported contract; the SDK only exports the text.
+
 ## 3. Run
 
 ```sh
@@ -267,8 +312,8 @@ int main(int argc, char** argv) {
 `TlsKeyPair` (`tls`), `CaBundle` (`caBundle`), `Keystore` (`keystore`), `TextFile` (`text`), `BinaryFile`
 (`binary`), `ConfigFile<T>` (`config`; the format comes from the extension or `.format(...)`). File methods:
 `path` (required), `path_env`, `required`, `secret`, `max_size`, `reload` (only `"restart"`), `group`,
-`deprecated`, `format`, and per type `dns_names`, `key_algorithms`, `min_remaining` (a `std::chrono` duration
-or Go syntax such as `"720h"`), `require_ca` (tls), `min_certificates` (caBundle), `password_var` (keystore),
+`deprecated`, `format`, `description`, `details`, `doc`, and per type `dns_names`, `key_algorithms`,
+`min_remaining` (a `std::chrono` duration or Go syntax such as `"720h"`), `require_ca` (tls), `min_certificates` (caBundle), `password_var` (keystore),
 `pattern`, `min_length`, `max_length` (text). `--help` lists file inputs in a `Files` section with their path
 and `path_env`. The environment-only build (`DOCUCONF_FILE_INPUTS=OFF`) has no `add_file`.
 
@@ -315,7 +360,7 @@ Variable methods: `default_val`, `required`, `secret`, `flag`, `min`, `max`, `ra
 `max_length`, `pattern` (RE2, matches anywhere: anchor it with `^`/`$`), `url`, `schemes`, `values`,
 `min_items`, `max_items`, `item_min`, `item_max`, `item_range`, `item_min_length`, `item_max_length`,
 `delimiter` (the csv separator), `group`,
-`examples`, `deprecated`, `config_key`, `description`. A method that does not apply to the variable's type
+`examples`, `deprecated`, `config_key`, `description`, `details`, `doc`. A method that does not apply to the variable's type
 does not compile (`min_length()` applies to a std::string variable). Durations take `std::chrono` values or Go
 syntax strings (`"30s"`).
 

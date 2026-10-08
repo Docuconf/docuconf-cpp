@@ -130,6 +130,8 @@ VarSpec var_from_json(const std::string& name, const json& j, std::vector<std::s
     }
     spec.type = t->second;
     spec.description = f.str("description").value_or("");
+    // Docs only: checked with the declaration (validate_var), never read.
+    spec.details = f.str("details");
     spec.required = f.boolean("required");
     spec.secret = f.boolean("secret");
     if (spec.type == VarType::Int || spec.type == VarType::Float || spec.type == VarType::Duration) {

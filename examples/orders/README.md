@@ -8,7 +8,9 @@ with docuconf next to a CLI11 app. It shows:
 - `GET /healthz`, which returns `ok`, and `GET /config`, which returns the typed configuration as JSON with the
   secret redacted;
 - the boot check: a bad environment stops the service with every problem listed;
-- [`contract.cue`](contract.cue), exported by the app itself.
+- [`contract.cue`](contract.cue), exported by the app itself. `WORKER_COUNT` is documented with `.doc()`: the
+  first paragraph of its doc comment is the description and the rest its `details`, which
+  `docuconf docs contract.cue` renders into CONFIG.md and CONFIG.agents.md.
 
 | Variable | Type | Rules |
 |---|---|---|

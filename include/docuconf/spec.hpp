@@ -92,6 +92,8 @@ struct VarSpec {
     std::string name;
     VarType type = VarType::String;
     std::string description;
+    /// CommonMark for generated docs only (SPEC §4.2); never read at runtime.
+    std::optional<std::string> details;
     bool required = false;
     bool secret = false;
     std::optional<Value> default_value;
@@ -143,6 +145,8 @@ struct FileSpec {
     std::string name;
     FileType type = FileType::Binary;
     std::string description;
+    /// CommonMark for generated docs only (SPEC §4.2); never read at runtime.
+    std::optional<std::string> details;
     bool required = false;
     bool secret = false;
     std::string path;

@@ -176,6 +176,7 @@ endif()
 add_library(docuconf
   src/contract.cpp
   src/declaration.cpp
+  src/doc.cpp
   src/duration.cpp
   src/errors.cpp
   src/export.cpp

@@ -16,6 +16,7 @@ if(DOCUCONF_FILE_INPUTS)
   add_executable(docuconf_tests
     conformance_test.cpp
     devx_test.cpp
+    doc_test.cpp
     duration_test.cpp
     export_test.cpp
     files_test.cpp
@@ -26,6 +27,7 @@ else()
   add_executable(docuconf_tests
     conformance_test.cpp
     devx_test.cpp
+    doc_test.cpp
     duration_test.cpp)
   target_link_libraries(docuconf_tests PRIVATE docuconf::docuconf GTest::gtest_main)
 endif()

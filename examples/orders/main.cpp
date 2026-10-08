@@ -43,7 +43,17 @@ int main(int argc, char** argv) {
         .default_val("30s");
 
     int worker_count = 0;
-    config.add_var("WORKER_COUNT", worker_count, "Number of request worker threads")
+    config.add_var("WORKER_COUNT", worker_count)
+        .doc(R"(
+            /// Number of request worker threads.
+            ///
+            /// Each worker answers one connection at a time, so this is also the
+            /// number of requests served at once. Raise it when requests queue up.
+            ///
+            /// Keep it at or below the database pool size:
+            /// @li one connection per worker;
+            /// @li plus one for migrations.
+        )")
         .range(1, 64)
         .default_val(4);
 

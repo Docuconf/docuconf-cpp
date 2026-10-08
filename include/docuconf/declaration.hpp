@@ -37,6 +37,7 @@
 #include <CLI/CLI.hpp>
 #include <nlohmann/json.hpp>
 
+#include "doc.hpp"
 #include "duration.hpp"
 #include "errors.hpp"
 #include "files.hpp"
@@ -257,6 +258,21 @@ public:
     Var& description(std::string d) {
         spec_.description = std::move(d);
         if (option_) option_->description(spec_.description);
+        return *this;
+    }
+    /// Long-form documentation, in CommonMark: why the input exists and
+    /// when to change it. Exported for `docuconf docs`; never read at
+    /// runtime. Not blank, and at most 4000 characters.
+    Var& details(std::string d) {
+        spec_.details = std::move(d);
+        return *this;
+    }
+    /// The input's Doxygen doc comment: its first paragraph is the
+    /// description and the rest the details (see split_doc()).
+    Var& doc(const std::string& comment) {
+        Doc d = split_doc(comment);
+        description(std::move(d.description));
+        if (!d.details.empty()) spec_.details = std::move(d.details);
         return *this;
     }
     /// The contract's group; also the --help group of a flag.
@@ -635,6 +651,23 @@ public:
         spec_.group = std::move(g);
         return *this;
     }
+    File& description(std::string d) {
+        spec_.description = std::move(d);
+        return *this;
+    }
+    /// Long-form documentation, in CommonMark (see Var::details()).
+    File& details(std::string d) {
+        spec_.details = std::move(d);
+        return *this;
+    }
+    /// The input's Doxygen doc comment: its first paragraph is the
+    /// description and the rest the details (see split_doc()).
+    File& doc(const std::string& comment) {
+        Doc d = split_doc(comment);
+        spec_.description = std::move(d.description);
+        if (!d.details.empty()) spec_.details = std::move(d.details);
+        return *this;
+    }
     File& deprecated(std::string message, std::string replaced_by = "") {
         spec_.deprecated = std::move(message);
         spec_.replaced_by = std::move(replaced_by);
@@ -734,8 +767,12 @@ public:
     /// json_schema() (a `json` value, bound with nlohmann's from_json).
     /// Wrap it in `std::optional` for an optional variable with no default;
     /// any other variable without a default is required.
+    ///
+    /// Leave `description` out to take it from `.doc()`, the input's
+    /// Doxygen doc comment, whose first paragraph is the description and
+    /// the rest the details.
     template <class T>
-    Var<T>& add_var(std::string name, T& target, std::string description) {
+    Var<T>& add_var(std::string name, T& target, std::string description = "") {
         before_declare(name);
         auto var = std::make_unique<Var<T>>(target);
         Var<T>* raw = var.get();
@@ -748,16 +785,16 @@ public:
     }
 
 #if DOCUCONF_FILE_INPUTS
-    File& add_file(std::string name, TlsKeyPair& target, std::string description);
-    File& add_file(std::string name, CaBundle& target, std::string description);
-    File& add_file(std::string name, Keystore& target, std::string description);
-    File& add_file(std::string name, TextFile& target, std::string description);
-    File& add_file(std::string name, BinaryFile& target, std::string description);
+    File& add_file(std::string name, TlsKeyPair& target, std::string description = "");
+    File& add_file(std::string name, CaBundle& target, std::string description = "");
+    File& add_file(std::string name, Keystore& target, std::string description = "");
+    File& add_file(std::string name, TextFile& target, std::string description = "");
+    File& add_file(std::string name, BinaryFile& target, std::string description = "");
 
     /// A structured config file bound to T, which needs a json_schema() and
     /// nlohmann's from_json.
     template <class T>
-    File& add_file(std::string name, ConfigFile<T>& target, std::string description) {
+    File& add_file(std::string name, ConfigFile<T>& target, std::string description = "") {
         static_assert(detail::has_schema<T>::value, "docuconf: a config file type needs a json_schema()");
         File& f = new_file(std::move(name), FileType::Config, std::move(description));
         f.spec_.schema = json_schema<T>::get();
@@ -767,7 +804,7 @@ public:
     }
 #else
     template <class T>
-    File& add_file(std::string, T&, std::string) {
+    File& add_file(std::string, T&, std::string = "") {
         static_assert(detail::always_false<T>,
                       "docuconf: this build has no file inputs (DOCUCONF_FILE_INPUTS=OFF); configure docuconf "
                       "with -DDOCUCONF_FILE_INPUTS=ON to declare files");
