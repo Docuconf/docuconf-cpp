@@ -32,10 +32,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # release-please has usually created the release already.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" docuconf-cpp-*.tar.gz docuconf-cpp-*.tar.gz.sha256 --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" docuconf-cpp-*.tar.gz docuconf-cpp-*.tar.gz.sha256 \
-              --title "$GITHUB_REF_NAME" --generate-notes
+          # release-please has usually created the release; re-runs replace the assets.
+          if ! gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
           fi
+          gh release upload "$GITHUB_REF_NAME" docuconf-cpp-*.tar.gz docuconf-cpp-*.tar.gz.sha256 --clobber
