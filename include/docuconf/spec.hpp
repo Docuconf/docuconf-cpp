@@ -99,7 +99,8 @@ struct VarSpec {
     // int, float, duration
     std::optional<Value> min;
     std::optional<Value> max;
-    // string
+    // string; max_length also bounds a url or a json value. Lengths count
+    // characters (Unicode code points), never bytes.
     std::optional<std::uint64_t> min_length;
     std::optional<std::uint64_t> max_length;
     std::optional<std::string> pattern;
@@ -115,6 +116,9 @@ struct VarSpec {
     std::optional<std::uint64_t> max_items;
     std::optional<std::int64_t> item_min;
     std::optional<std::int64_t> item_max;
+    // Bounds on the length of each item of a string list, in characters.
+    std::optional<std::uint64_t> item_min_length;
+    std::optional<std::uint64_t> item_max_length;
     // duration
     DurationEncoding duration_encoding = DurationEncoding::Go;
     // json

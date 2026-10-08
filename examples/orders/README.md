@@ -1,10 +1,10 @@
 # orders: a docuconf example
 
 A tiny HTTP service ([cpp-httplib](https://github.com/yhirose/cpp-httplib)) whose configuration is declared
-with docuconf on top of CLI11. It shows:
+with docuconf next to a CLI11 app. It shows:
 
-- six variables declared as CLI11 options, with the docuconf metadata the contract needs (descriptions, a
-  secret, ranges, an enum, a URL scheme, a list and a duration);
+- six environment variables with the metadata the contract needs (descriptions, a secret, ranges, an enum, a
+  URL scheme, a list and a duration);
 - `GET /healthz`, which returns `ok`, and `GET /config`, which returns the typed configuration as JSON with the
   secret redacted;
 - the boot check: a bad environment stops the service with every problem listed;
@@ -19,8 +19,10 @@ with docuconf on top of CLI11. It shows:
 | `REQUEST_TIMEOUT` | duration (Go syntax, `30s`) | 1s–5m, default `30s` |
 | `WORKER_COUNT` | int | 1–64, default 4 |
 
-Each one is also a command-line flag (`--port`, `--log-level`...), as CLI11 options are; `--help` lists them
-with their environment names.
+They are read from the environment only, which is what the platform validates before deploy. `--help` lists
+them in an `Environment variables` section. `PORT` also opts in to a command-line flag, `--port`, for local
+runs; a value given that way wins over the environment, gets the same checks, and is named in errors
+(`PORT (--port): 0 is below min 1`).
 
 ## Run it locally
 

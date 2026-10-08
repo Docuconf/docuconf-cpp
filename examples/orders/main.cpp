@@ -13,42 +13,43 @@ int main(int argc, char** argv) {
     // The service name becomes the contract's metadata.name.
     docuconf::Declaration config{app, "orders"};
 
-    // Each variable is a CLI11 option (--port) read from its environment
-    // variable (PORT). docuconf adds the description, secret and the
-    // constraints, and checks every value at boot.
+    // Each variable is read from its environment variable and checked at
+    // boot; --help lists them all. PORT is also a command-line flag (--port)
+    // for local runs; the platform only ever sets the environment.
     int port = 0;
-    config.add_var("PORT", port, "HTTP listen port")->range(1, 65535)->default_val(8080);
+    config.add_var("PORT", port, "HTTP listen port").range(1, 65535).default_val(8080).flag();
 
     std::string log_level;
     config.add_var("LOG_LEVEL", log_level, "Minimum log level emitted")
-        ->values({"debug", "info", "warn", "error"})
-        ->default_val("info");
+        .values({"debug", "info", "warn", "error"})
+        .default_val("info");
 
     // A secret: never printed, never given a default, supplied by the
     // platform from a Kubernetes Secret.
     std::string database_url;
     config.add_var("DATABASE_URL", database_url, "Primary Postgres connection string")
-        ->secret()
-        ->required()
-        ->schemes({"postgres"});
+        .secret()
+        .required()
+        .schemes({"postgres"});
 
     std::vector<std::string> allowed_origins;
     config.add_var("ALLOWED_ORIGINS", allowed_origins, "Origins allowed to call the API (CORS)")
-        ->min_items(1)
-        ->default_val({"http://localhost:3000"});
+        .min_items(1)
+        .default_val({"http://localhost:3000"});
 
     std::chrono::milliseconds request_timeout{};
     config.add_var("REQUEST_TIMEOUT", request_timeout, "Time allowed to read a request")
-        ->range("1s", "5m")
-        ->default_val("30s");
+        .range("1s", "5m")
+        .default_val("30s");
 
     int worker_count = 0;
     config.add_var("WORKER_COUNT", worker_count, "Number of request worker threads")
-        ->range(1, 64)
-        ->default_val(4);
+        .range(1, 64)
+        .default_val(4);
 
     // Parses, validates every input and binds the values, or exits:
-    // 0 after --help or --docuconf-export, 1 with every violation listed.
+    // 0 after --help or --docuconf-export, 1 with every violation listed,
+    // 2 for a mistake in the declaration.
     DOCUCONF_PARSE(config, argc, argv);
 
     httplib::Server server;

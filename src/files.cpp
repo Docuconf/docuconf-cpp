@@ -6,10 +6,12 @@
 #include <sstream>
 #include <sys/stat.h>
 
+#include "internal.hpp"
+
+#if DOCUCONF_FILE_INPUTS
 #include <toml++/toml.hpp>
 #include <yaml-cpp/yaml.h>
-
-#include "internal.hpp"
+#endif
 
 namespace docuconf {
 
@@ -132,6 +134,8 @@ std::vector<std::string> validate_files(std::vector<FileSpec>& files, const std:
     }
     return problems;
 }
+
+#if DOCUCONF_FILE_INPUTS
 
 namespace {
 
@@ -380,6 +384,17 @@ std::map<std::string, LoadedFile> load_files(const std::vector<FileSpec>& files,
     }
     return out;
 }
+
+#else
+
+// The environment-only build has no add_file, so there is nothing to load.
+std::map<std::string, LoadedFile> load_files(const std::vector<FileSpec>&, const Env&,
+                                             const std::map<std::string, std::optional<Value>>&,
+                                             const std::string&, std::vector<Violation>&) {
+    return {};
+}
+
+#endif
 
 }  // namespace detail
 }  // namespace docuconf

@@ -16,7 +16,19 @@ TEST(Export, MatchesGolden) {
     if (const char* u = std::getenv("UPDATE_GOLDEN"); u && std::string(u) == "1") {
         std::ofstream(golden_path()) << got;
     }
-    EXPECT_EQ(got, testutil::read(golden_path())) << "re-run with UPDATE_GOLDEN=1 to update the golden file";
+    EXPECT_EQ(testutil::without_generator_version(got), testutil::without_generator_version(testutil::read(golden_path())))
+        << "re-run with UPDATE_GOLDEN=1 to update the golden file";
+}
+
+TEST(Export, GoldenComparisonIgnoresOnlyTheGeneratorVersion) {
+    Gateway g;
+    std::string got = g.config.export_cue();
+    std::string bumped = std::regex_replace(got, std::regex(R"(version: +"[0-9][^"]*")"), "version: \"99.0.0\"");
+    ASSERT_NE(bumped, got);
+    EXPECT_EQ(testutil::without_generator_version(bumped), testutil::without_generator_version(got));
+    std::string renamed = std::regex_replace(got, std::regex(R"(language: "cpp")"), "language: \"c\"");
+    ASSERT_NE(renamed, got);
+    EXPECT_NE(testutil::without_generator_version(renamed), testutil::without_generator_version(got));
 }
 
 TEST(Export, IsDeterministic) {

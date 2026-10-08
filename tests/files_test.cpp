@@ -35,11 +35,11 @@ struct Tls {
     docuconf::TlsKeyPair tls;
     docuconf::File* file;
     Tls() {
-        file = s.config.add_file("serving-tls", tls, "Certificate served over HTTPS")
-                   ->path("/etc/svc/tls")
-                   ->required()
-                   ->dns_names({"svc.internal", "api.example.com"})
-                   ->min_remaining("720h");
+        file = &s.config.add_file("serving-tls", tls, "Certificate served over HTTPS")
+                   .path("/etc/svc/tls")
+                   .required()
+                   .dns_names({"svc.internal", "api.example.com"})
+                   .min_remaining("720h");
     }
 };
 
@@ -189,7 +189,7 @@ TEST(Config, ParsesEveryFormat) {
         d.write("etc/svc/" + name, body);
         Svc s;
         docuconf::ConfigFile<Limits> limits;
-        s.config.add_file("limits", limits, "Limits for the service")->path("/etc/svc/" + name)->required();
+        s.config.add_file("limits", limits, "Limits for the service").path("/etc/svc/" + name).required();
         s.config.load(root_env(d));
         EXPECT_TRUE(limits.present) << name;
         EXPECT_EQ(limits->max, 5) << name;
@@ -201,7 +201,7 @@ TEST(Config, Malformed) {
     d.write("etc/svc/limits.yaml", "max: [5\n");
     Svc s;
     docuconf::ConfigFile<Limits> limits;
-    s.config.add_file("limits", limits, "Limits for the service")->path("/etc/svc/limits.yaml");
+    s.config.add_file("limits", limits, "Limits for the service").path("/etc/svc/limits.yaml");
     EXPECT_EQ(codes(s, root_env(d), "limits"), std::vector<Code>{Code::FileMalformed});
 }
 
@@ -210,7 +210,7 @@ TEST(Config, SchemaViolation) {
     d.write("etc/svc/limits.json", R"({"max": 0, "extra": true})");
     Svc s;
     docuconf::ConfigFile<Limits> limits;
-    s.config.add_file("limits", limits, "Limits for the service")->path("/etc/svc/limits.json");
+    s.config.add_file("limits", limits, "Limits for the service").path("/etc/svc/limits.json");
     EXPECT_EQ(codes(s, root_env(d), "limits"), std::vector<Code>{Code::SchemaMismatch});
 }
 
@@ -219,7 +219,7 @@ TEST(Config, DoesNotBindToTheAppsType) {
     d.write("etc/svc/tiny.json", R"({"max": 300})");
     Svc s;
     docuconf::ConfigFile<Tiny> tiny;
-    s.config.add_file("tiny", tiny, "Tiny limits for the service")->path("/etc/svc/tiny.json");
+    s.config.add_file("tiny", tiny, "Tiny limits for the service").path("/etc/svc/tiny.json");
     EXPECT_EQ(codes(s, root_env(d), "tiny"), std::vector<Code>{Code::SchemaMismatch});
 }
 
@@ -227,7 +227,7 @@ TEST(Config, OptionalAndMissingIsAbsent) {
     TempDir d;
     Svc s;
     docuconf::ConfigFile<Limits> limits;
-    s.config.add_file("limits", limits, "Limits for the service")->path("/etc/svc/limits.json");
+    s.config.add_file("limits", limits, "Limits for the service").path("/etc/svc/limits.json");
     s.config.load(root_env(d));
     EXPECT_FALSE(limits.present);
 }
@@ -238,9 +238,9 @@ TEST(Config, PathEnvIsPrefixedWithTheFileRoot) {
     Svc s;
     docuconf::ConfigFile<Limits> limits;
     s.config.add_file("limits", limits, "Limits for the service")
-        ->path("/etc/svc/limits.toml")
-        ->path_env("LIMITS_FILE")
-        ->required();
+        .path("/etc/svc/limits.toml")
+        .path_env("LIMITS_FILE")
+        .required();
     auto env = root_env(d);
     env["LIMITS_FILE"] = "/elsewhere/limits.toml";
     s.config.load(env);
@@ -253,7 +253,7 @@ TEST(Config, TooLarge) {
     d.write("etc/svc/limits.json", R"({"max": 5})");
     Svc s;
     docuconf::ConfigFile<Limits> limits;
-    s.config.add_file("limits", limits, "Limits for the service")->path("/etc/svc/limits.json")->max_size(4);
+    s.config.add_file("limits", limits, "Limits for the service").path("/etc/svc/limits.json").max_size(4);
     EXPECT_EQ(codes(s, root_env(d), "limits"), std::vector<Code>{Code::FileTooLarge});
 }
 
@@ -264,7 +264,7 @@ TEST(Config, Unreadable) {
     fs::permissions(p, fs::perms::none);
     Svc s;
     docuconf::ConfigFile<Limits> limits;
-    s.config.add_file("limits", limits, "Limits for the service")->path("/etc/svc/limits.json");
+    s.config.add_file("limits", limits, "Limits for the service").path("/etc/svc/limits.json");
     EXPECT_EQ(codes(s, root_env(d), "limits"), std::vector<Code>{Code::FileUnreadable});
 }
 
@@ -277,11 +277,11 @@ TEST(CaBundle, CountsCertificates) {
     d.write("etc/svc/ca/bundle.pem", a.cert_pem() + b.cert_pem());
     Svc s;
     docuconf::CaBundle ca;
-    s.config.add_file("ca", ca, "Private CAs to trust")->path("/etc/svc/ca/bundle.pem")->min_certificates(3);
+    s.config.add_file("ca", ca, "Private CAs to trust").path("/etc/svc/ca/bundle.pem").min_certificates(3);
     EXPECT_EQ(codes(s, root_env(d), "ca"), std::vector<Code>{Code::FileMalformed});
     Svc s2;
     docuconf::CaBundle ca2;
-    s2.config.add_file("ca", ca2, "Private CAs to trust")->path("/etc/svc/ca/bundle.pem")->min_certificates(2);
+    s2.config.add_file("ca", ca2, "Private CAs to trust").path("/etc/svc/ca/bundle.pem").min_certificates(2);
     s2.config.load(root_env(d));
     EXPECT_EQ(ca2.certificates, 2u);
 }
@@ -291,12 +291,12 @@ struct Ks {
     std::string password;
     docuconf::Keystore ks;
     explicit Ks(const std::string& format) {
-        s.config.add_var("KS_PASSWORD", password, "Keystore password")->secret();
+        s.config.add_var("KS_PASSWORD", password, "Keystore password").secret();
         s.config.add_file("partner", ks, "Partner client keystore")
-            ->path("/etc/svc/partner/ks.bin")
-            ->format(format)
-            ->password_var("KS_PASSWORD")
-            ->required();
+            .path("/etc/svc/partner/ks.bin")
+            .format(format)
+            .password_var("KS_PASSWORD")
+            .required();
     }
 };
 
@@ -357,20 +357,20 @@ TEST(Text, PatternAndLength) {
     {
         Svc s;
         docuconf::TextFile t;
-        s.config.add_file("license", t, "Licence key")->path("/etc/svc/license/key")->pattern("^[A-Z0-9]{5}-[0-9]{5}\\n?$");
+        s.config.add_file("license", t, "Licence key").path("/etc/svc/license/key").pattern("^[A-Z0-9]{5}-[0-9]{5}\\n?$");
         s.config.load(root_env(d));
         EXPECT_EQ(t.content, "ABCDE-12345\n");
     }
     {
         Svc s;
         docuconf::TextFile t;
-        s.config.add_file("license", t, "Licence key")->path("/etc/svc/license/key")->pattern("^[0-9]+$");
+        s.config.add_file("license", t, "Licence key").path("/etc/svc/license/key").pattern("^[0-9]+$");
         EXPECT_EQ(codes(s, root_env(d), "license"), std::vector<Code>{Code::PatternMismatch});
     }
     {
         Svc s;
         docuconf::TextFile t;
-        s.config.add_file("license", t, "Licence key")->path("/etc/svc/license/key")->max_length(5);
+        s.config.add_file("license", t, "Licence key").path("/etc/svc/license/key").max_length(5);
         EXPECT_EQ(codes(s, root_env(d), "license"), std::vector<Code>{Code::OutOfRange});
     }
 }
@@ -380,7 +380,7 @@ TEST(Binary, SizeOnly) {
     d.write("data/geo/db.mmdb", std::string("\x00\x01\x02", 3));
     Svc s;
     docuconf::BinaryFile b;
-    s.config.add_file("geoip", b, "GeoIP database")->path("/data/geo/db.mmdb")->max_size(16)->required();
+    s.config.add_file("geoip", b, "GeoIP database").path("/data/geo/db.mmdb").max_size(16).required();
     s.config.load(root_env(d));
     EXPECT_EQ(b.data.size(), 3u);
 }
@@ -389,7 +389,7 @@ TEST(Files, MissingRequiredFile) {
     TempDir d;
     Svc s;
     docuconf::BinaryFile b;
-    s.config.add_file("geoip", b, "GeoIP database")->path("/data/geo/db.mmdb")->required();
+    s.config.add_file("geoip", b, "GeoIP database").path("/data/geo/db.mmdb").required();
     EXPECT_EQ(codes(s, root_env(d), "geoip"), std::vector<Code>{Code::FileMissing});
 }
 
