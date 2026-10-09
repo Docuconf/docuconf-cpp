@@ -10,4 +10,5 @@
 #include "duration.hpp"
 #include "errors.hpp"
 #include "files.hpp"
+#include "keyset.hpp"
 #include "spec.hpp"

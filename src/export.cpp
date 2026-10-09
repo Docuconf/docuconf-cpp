@@ -57,6 +57,14 @@ ojson var_json(const VarSpec& s) {
         if (s.item_min_length) o["itemMinLength"] = *s.item_min_length;
         if (s.item_max_length) o["itemMaxLength"] = *s.item_max_length;
     }
+    if (s.type == VarType::KeySet) {
+        o["encoding"] = to_string(s.list_encoding);
+        if (s.list_encoding == ListEncoding::Csv) o["separator"] = s.separator;
+        o["minKeys"] = s.min_keys;
+        o["maxKeys"] = s.max_keys;
+        if (s.key_min_length) o["keyMinLength"] = *s.key_min_length;
+        if (s.key_max_length) o["keyMaxLength"] = *s.key_max_length;
+    }
     if (s.schema) o["schema"] = ojson::parse(s.schema->dump());
     return o;
 }

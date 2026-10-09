@@ -33,10 +33,10 @@ std::string sign(const std::string& key) {
 }
 
 // Loads WEBHOOK_KEYS as the service does at boot.
-std::optional<std::vector<std::string>> load(const std::string& value) {
+std::optional<docuconf::KeySet> load(const std::string& value) {
     CLI::App app;
     docuconf::Declaration config{app, "orders"};
-    std::optional<std::vector<std::string>> keys;
+    std::optional<docuconf::KeySet> keys;
     orders::declare_webhook_keys(config, keys);
     config.load({{"WEBHOOK_KEYS", value}, {"DOCUCONF_TERMINATION_LOG", "-"}});
     return keys;
@@ -59,9 +59,10 @@ int main() {
         expect(orders::verify(keys, kBody, sign(kNew)) == s.new_ok, std::string(s.name) + ": new key");
         expect(!orders::verify(keys, kBody, sign(std::string(32, 'x'))), std::string(s.name) + ": other key");
     }
-    expect(!orders::verify({kOld}, kBody, "not hex"), "accepted a malformed signature");
-    expect(!orders::verify({kOld}, kBody, ""), "accepted an empty signature");
-    expect(!orders::verify({}, kBody, sign(kOld)), "accepted a webhook with no keys configured");
+    docuconf::KeySet old_only({kOld});
+    expect(!orders::verify(old_only, kBody, "not hex"), "accepted a malformed signature");
+    expect(!orders::verify(old_only, kBody, ""), "accepted an empty signature");
+    expect(!orders::verify(docuconf::KeySet{}, kBody, sign(kOld)), "accepted a webhook with no keys configured");
     expect(!load("").has_value(), "an empty WEBHOOK_KEYS is unset");
 
     // An empty or truncated key, or a third key, stops the service at boot,

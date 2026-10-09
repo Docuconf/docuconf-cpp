@@ -26,6 +26,7 @@ const char* to_string(VarType t) noexcept {
         case VarType::Enum: return "enum";
         case VarType::List: return "list";
         case VarType::Json: return "json";
+        case VarType::KeySet: return "keySet";
     }
     return "?";
 }
@@ -154,30 +155,60 @@ namespace {
 
 Problem invalid(std::string m) { return {Code::InvalidType, std::move(m)}; }
 
+bool is_ascii_digit(char c) { return c >= '0' && c <= '9'; }
+
+// Whether s[i..] up to `end` is one or more ASCII digits.
+bool all_digits(const std::string& s, std::size_t i, std::size_t end) {
+    if (i >= end) return false;
+    for (; i < end; ++i)
+        if (!is_ascii_digit(s[i])) return false;
+    return true;
+}
+
+// SPEC §5: ^[+-]?[0-9]+$, base 10 (leading zeros are decimal, never
+// octal), within the 64-bit signed range.
 std::optional<std::int64_t> parse_int(const std::string& raw, Problem& err) {
-    std::int64_t v = 0;
-    const char* b = raw.data();
+    std::size_t start = (!raw.empty() && (raw[0] == '+' || raw[0] == '-')) ? 1 : 0;
+    if (!all_digits(raw, start, raw.size())) {
+        err = invalid("is not a base-10 integer");
+        return std::nullopt;
+    }
+    // from_chars takes a '-' but not a '+'.
+    const char* b = raw.data() + (raw[0] == '+' ? 1 : 0);
     const char* e = raw.data() + raw.size();
+    std::int64_t v = 0;
     auto r = std::from_chars(b, e, v, 10);
     if (r.ec == std::errc() && r.ptr == e) return v;
-    std::string digits = raw;
-    if (!digits.empty() && digits[0] == '-') digits.erase(0, 1);
-    bool all_digits = !digits.empty() && std::all_of(digits.begin(), digits.end(), [](char c) {
-        return c >= '0' && c <= '9';
-    });
-    if (all_digits) {
-        err = {Code::OutOfRange, "is outside the 64-bit integer range"};
-    } else {
-        err = invalid("is not a base-10 integer");
-    }
+    err = {Code::OutOfRange, "is outside the 64-bit integer range"};
     return std::nullopt;
 }
 
+// SPEC §5: ^[+-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$, rounded to the
+// nearest double, and finite.
 std::optional<double> parse_float(const std::string& raw) {
+    std::size_t i = (!raw.empty() && (raw[0] == '+' || raw[0] == '-')) ? 1 : 0;
+    std::size_t n = raw.size();
+    auto run = [&](std::size_t& j) {
+        std::size_t from = j;
+        while (j < n && is_ascii_digit(raw[j])) ++j;
+        return j > from;
+    };
+    std::size_t j = i;
+    if (!run(j)) return std::nullopt;
+    if (j < n && raw[j] == '.') {
+        ++j;
+        if (!run(j)) return std::nullopt;
+    }
+    if (j < n && (raw[j] == 'e' || raw[j] == 'E')) {
+        ++j;
+        if (j < n && (raw[j] == '+' || raw[j] == '-')) ++j;
+        if (!run(j)) return std::nullopt;
+    }
+    if (j != n) return std::nullopt;
     double v = 0;
-    const char* b = raw.data();
-    const char* e = raw.data() + raw.size();
-    // from_chars is locale-independent and takes no leading '+' or spaces.
+    // from_chars is locale-independent; it takes a '-' but not a '+'.
+    const char* b = raw.data() + (raw[0] == '+' ? 1 : 0);
+    const char* e = raw.data() + n;
     auto r = std::from_chars(b, e, v, std::chars_format::general);
     if (r.ec != std::errc() || r.ptr != e || !std::isfinite(v)) return std::nullopt;
     return v;
@@ -250,6 +281,13 @@ const re2::RE2& url_re() {
 }  // namespace
 
 std::optional<Value> parse_wire(const VarSpec& spec, const std::vector<std::string>& raws, Problem& err) {
+    if (spec.type == VarType::KeySet) {
+        // A key set travels as a list of strings (SPEC §5).
+        VarSpec list = spec;
+        list.type = VarType::List;
+        list.items = ItemType::String;
+        return parse_wire(list, raws, err);
+    }
     if (spec.type == VarType::List && spec.list_encoding == ListEncoding::Indexed)
         return parse_items(spec.items, raws, err);
     const std::string& raw = raws.at(0);
@@ -316,6 +354,7 @@ std::optional<Value> parse_wire(const VarSpec& spec, const std::vector<std::stri
             }
             return Value::json(std::move(j));
         }
+        case VarType::KeySet: break;  // parsed as a list above
     }
     err = invalid("has an unknown type");
     return std::nullopt;
@@ -472,6 +511,44 @@ std::vector<Problem> check_value(const VarSpec& spec, const Value& v, const std:
             }
             break;
         }
+        case VarType::KeySet: {
+            if (!v.is_list()) return wrong(), out;
+            const auto& keys = v.as_list();
+            std::uint64_t n = keys.size();
+            // Never a key in a message: only counts, indexes and lengths.
+            if (n < spec.min_keys)
+                out.emplace_back(Code::TooFewItems, "has " + std::to_string(n) + " keys, below minKeys " +
+                                                        std::to_string(spec.min_keys));
+            if (n > spec.max_keys)
+                out.emplace_back(Code::TooManyItems, "has " + std::to_string(n) + " keys, above maxKeys " +
+                                                         std::to_string(spec.max_keys));
+            // One violation per variable: the first key out of bounds.
+            for (std::size_t i = 0; i < keys.size(); ++i) {
+                if (!keys[i].is_string()) {
+                    out.emplace_back(Code::InvalidType, "has a key that is not a string");
+                    break;
+                }
+                std::uint64_t len = rune_count(keys[i].as_string());
+                std::string at = "key " + std::to_string(i);
+                if (len == 0) {
+                    out.emplace_back(Code::OutOfRange, at + " is empty (a stray separator?)");
+                    break;
+                }
+                if (spec.key_min_length && len < *spec.key_min_length) {
+                    out.emplace_back(Code::OutOfRange, at + " is " + std::to_string(len) +
+                                                           " characters, below keyMinLength " +
+                                                           std::to_string(*spec.key_min_length));
+                    break;
+                }
+                if (spec.key_max_length && len > *spec.key_max_length) {
+                    out.emplace_back(Code::OutOfRange, at + " is " + std::to_string(len) +
+                                                           " characters, above keyMaxLength " +
+                                                           std::to_string(*spec.key_max_length));
+                    break;
+                }
+            }
+            break;
+        }
         case VarType::Json: {
             if (!v.is_json()) return wrong(), out;
             if (spec.max_length) {
@@ -539,11 +616,12 @@ std::optional<Value> value_from_json(const VarSpec& spec, const nlohmann::json& 
             if (!d) return wrong();
             return Value(*d);
         }
-        case VarType::List: {
+        case VarType::List:
+        case VarType::KeySet: {
             if (!j.is_array()) return wrong();
             Value::List out;
             for (const auto& x : j) {
-                if (spec.items == ItemType::String) {
+                if (spec.type == VarType::KeySet || spec.items == ItemType::String) {
                     if (!x.is_string()) return wrong();
                     out.emplace_back(x.get<std::string>());
                 } else {
@@ -566,6 +644,16 @@ std::string check_details(const std::optional<std::string>& details) {
     if (n > kMaxDetails)
         return "details are " + std::to_string(n) + " characters; details may have at most " +
                std::to_string(kMaxDetails);
+    return "";
+}
+
+std::string check_deprecated(const std::string& message) {
+    if (message.find_first_not_of(" \t\n\r\f\v") == std::string::npos)
+        return "the deprecated message must not be blank: say what to use instead, or why the input is going away";
+    std::size_t n = rune_count(message);
+    if (n > kMaxDeprecated)
+        return "the deprecated message is " + std::to_string(n) + " characters; it may have at most " +
+               std::to_string(kMaxDeprecated);
     return "";
 }
 
@@ -594,8 +682,21 @@ std::vector<std::string> validate_var(VarSpec& spec) {
         bad("itemMin and itemMax only apply to a list of ints");
     if ((spec.item_min_length || spec.item_max_length) && !(spec.type == VarType::List && spec.items == ItemType::String))
         bad("itemMinLength and itemMaxLength only apply to a list of strings");
-    if (spec.type == VarType::List && spec.list_encoding == ListEncoding::Csv && spec.separator.empty())
+    if ((spec.type == VarType::List || spec.type == VarType::KeySet) && spec.list_encoding == ListEncoding::Csv &&
+        spec.separator.empty())
         bad("separator must not be empty");
+    if (spec.type == VarType::KeySet) {
+        if (!spec.secret) bad("a keySet is always secret");
+        if (spec.min_keys < 1) bad("minKeys must be at least 1");
+        if (spec.max_keys < spec.min_keys) bad("maxKeys must be at least minKeys");
+        if (spec.key_min_length && *spec.key_min_length < 1) bad("keyMinLength must be at least 1");
+        if (spec.key_max_length && *spec.key_max_length < 1) bad("keyMaxLength must be at least 1");
+        if (spec.key_min_length && spec.key_max_length && *spec.key_min_length > *spec.key_max_length)
+            bad("keyMinLength is above keyMaxLength");
+    } else if (spec.min_keys != 1 || spec.max_keys != 2 || spec.key_min_length || spec.key_max_length) {
+        bad(std::string("minKeys, maxKeys, keyMinLength and keyMaxLength only apply to a keySet, not a ") +
+            to_string(spec.type) + " variable");
+    }
     if (spec.min_length && spec.max_length && *spec.min_length > *spec.max_length) bad("minLength is above maxLength");
     if (spec.min_items && spec.max_items && *spec.min_items > *spec.max_items) bad("minItems is above maxItems");
     if (spec.item_min && spec.item_max && *spec.item_min > *spec.item_max) bad("itemMin is above itemMax");
@@ -622,8 +723,13 @@ std::vector<std::string> validate_var(VarSpec& spec) {
         spec.compiled = compile_pattern(*spec.pattern, err);
         if (!spec.compiled) bad(err);
     }
-    if (spec.deprecated && !spec.replaced_by.empty() && !is_env_name(spec.replaced_by))
-        bad("replacedBy must be a variable name");
+    if (spec.deprecated) {
+        if (auto d = check_deprecated(*spec.deprecated); !d.empty()) bad(d);
+        if (spec.required)
+            bad("a required variable cannot be deprecated: the platform could not stop setting it; make it "
+                "optional first");
+        if (!spec.replaced_by.empty() && !is_env_name(spec.replaced_by)) bad("replacedBy must be a variable name");
+    }
     if (spec.default_value && problems.empty()) {
         for (const auto& [code, msg] : check_value(spec, *spec.default_value)) bad("default " + msg);
     }
@@ -672,16 +778,29 @@ Violation violation(const VarSpec& spec, Code code, std::string message) {
 
 }  // namespace
 
+std::string selected_profile(const std::vector<VarSpec>& vars, const Profiles& profiles, const Env& env) {
+    // The selector's value when the environment sets it, read as SPEC §5
+    // reads its type: for a string selector, the empty string is a value.
+    auto sel = env.find(profiles.selector);
+    if (sel != env.end()) {
+        for (const auto& v : vars) {
+            if (v.name == profiles.selector && (v.type == VarType::String || !sel->second.empty()))
+                return sel->second;
+        }
+    }
+    return profiles.default_profile;
+}
+
 std::map<std::string, std::optional<Value>> load_vars(const std::vector<VarSpec>& vars, const Env& env,
                                                       const Profiles* profiles,
                                                       std::vector<Violation>& violations,
-                                                      std::vector<std::string>* warnings) {
+                                                      std::vector<std::string>* warnings,
+                                                      const std::map<std::string, Layer>* overlays) {
     const std::map<std::string, Value>* profile_defaults = nullptr;
+    std::string profile;
     if (profiles) {
-        auto sel = env.find(profiles->selector);
-        std::string selected =
-            (sel != env.end() && !sel->second.empty()) ? sel->second : profiles->default_profile;
-        auto it = profiles->defaults.find(selected);
+        profile = selected_profile(vars, *profiles, env);
+        auto it = profiles->defaults.find(profile);
         if (it != profiles->defaults.end()) profile_defaults = &it->second;
     }
     std::map<std::string, std::optional<Value>> out;
@@ -690,7 +809,10 @@ std::map<std::string, std::optional<Value>> load_vars(const std::vector<VarSpec>
         std::vector<std::string> raws;
         bool present = false;
         bool failed = false;
-        if (spec.type == VarType::List && spec.list_encoding == ListEncoding::Indexed) {
+        bool items = false;  // raws are items, not one wire string
+        std::string source;  // where a value below the environment came from
+        if ((spec.type == VarType::List || spec.type == VarType::KeySet) &&
+            spec.list_encoding == ListEncoding::Indexed) {
             auto [count, gap] = indexed_items(env, spec.name);
             if (gap) {
                 violations.push_back(violation(spec, Code::InvalidType,
@@ -701,6 +823,7 @@ std::map<std::string, std::optional<Value>> load_vars(const std::vector<VarSpec>
             }
             for (std::size_t i = 0; i < count; ++i) raws.push_back(env.at(spec.name + "__" + std::to_string(i)));
             present = count > 0;
+            items = true;
         } else {
             auto it = env.find(spec.name);
             if (it != env.end() && (spec.type == VarType::String || !it->second.empty())) {
@@ -708,12 +831,30 @@ std::map<std::string, std::optional<Value>> load_vars(const std::vector<VarSpec>
                 present = true;
             }
         }
+        const Layer* overlay = nullptr;
+        if (overlays) {
+            auto it = overlays->find(spec.name);
+            if (it != overlays->end()) overlay = &it->second;
+        }
+        if (present && overlay && !overlay->bad && warnings) {
+            warnings->push_back(spec.name + " is set in the environment and in " + overlay->source +
+                                "; the environment wins");
+        }
+        if (!present && overlay) {
+            // An overlay's bad value is already reported.
+            if (overlay->bad) continue;
+            raws = overlay->raws;
+            items = overlay->items;
+            present = true;
+            source = overlay->source;
+        }
 
         std::optional<Value> found;
         if (present) {
             if (spec.deprecated && warnings) {
                 warnings->push_back(spec.name + " is deprecated: " + *spec.deprecated +
-                                    (spec.replaced_by.empty() ? "" : "; use " + spec.replaced_by));
+                                    (spec.replaced_by.empty() ? "" : "; use " + spec.replaced_by) +
+                                    (source.empty() ? "" : " (set in " + source + ")"));
             }
             if (spec.secret) {
                 for (const auto& r : raws) {
@@ -738,14 +879,26 @@ std::map<std::string, std::optional<Value>> load_vars(const std::vector<VarSpec>
             }
             if (failed) continue;
             Problem err;
-            found = parse_wire(spec, raws, err);
+            if (items && !(spec.type == VarType::List || spec.type == VarType::KeySet)) {
+                err = invalid("is a list, not a scalar");
+            } else if (items && spec.list_encoding != ListEncoding::Indexed) {
+                // Overlay items: each one is already an item, whatever the
+                // encoding the environment uses.
+                VarSpec indexed = spec;
+                indexed.list_encoding = ListEncoding::Indexed;
+                found = parse_wire(indexed, raws, err);
+            } else {
+                found = parse_wire(spec, raws, err);
+            }
             if (!found) {
-                std::string what = (raws.size() == 1 && !spec.secret) ? quote(raws[0]) : "value";
+                std::string what = (raws.size() == 1 && !items && !spec.secret) ? quote(raws[0]) : "value";
+                if (!source.empty()) what = source + ": " + what;
                 violations.push_back(violation(spec, err.first, what + " " + err.second));
                 continue;
             }
         } else if (profile_defaults && profile_defaults->count(spec.name)) {
             found = profile_defaults->at(spec.name);
+            source = "profile " + profile;
         } else if (spec.default_value) {
             found = spec.default_value;
         }
@@ -759,7 +912,7 @@ std::map<std::string, std::optional<Value>> load_vars(const std::vector<VarSpec>
             continue;
         }
         // A json value is measured as received (SPEC §4.3).
-        const std::string* raw = present && raws.size() == 1 ? &raws[0] : nullptr;
+        const std::string* raw = present && raws.size() == 1 && !items ? &raws[0] : nullptr;
         auto problems = check_value(spec, *found, raw);
         if (problems.empty()) {
             out[spec.name] = std::move(found);
@@ -768,6 +921,7 @@ std::map<std::string, std::optional<Value>> load_vars(const std::vector<VarSpec>
         std::string hint;
         if (spec.secret && found->is_string() && !found->as_string().empty() && found->as_string().back() == '\n')
             hint = " (the value ends in a newline: was the secret created from a file?)";
+        if (!source.empty()) hint += " (from " + source + ")";
         for (auto& [code, msg] : problems) violations.push_back(violation(spec, code, msg + hint));
     }
     return out;

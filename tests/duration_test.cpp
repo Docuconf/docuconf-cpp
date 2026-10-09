@@ -28,7 +28,15 @@ TEST(Duration, Go) {
     EXPECT_EQ(ok(DurationEncoding::Go, "1.5h"), 5400s);
     EXPECT_EQ(ok(DurationEncoding::Go, "5ns"), Duration(5));
     EXPECT_EQ(ok(DurationEncoding::Go, "0"), Duration(0));
-    for (const char* bad : {"", " 1s", "1s\n", "abc", "1", "-1s", "1d", "PT90S"})
+    EXPECT_EQ(ok(DurationEncoding::Go, "-0"), Duration(0));
+    EXPECT_EQ(ok(DurationEncoding::Go, "-1m30s"), -90s);
+    EXPECT_EQ(ok(DurationEncoding::Go, "+5s"), 5s);
+    EXPECT_EQ(ok(DurationEncoding::Go, ".5s"), 500ms);
+    EXPECT_EQ(ok(DurationEncoding::Go, "1.s"), 1s);
+    EXPECT_EQ(ok(DurationEncoding::Go, "1\xC2\xB5s"), 1us);
+    EXPECT_EQ(ok(DurationEncoding::Go, "1\xCE\xBCs"), 1us);
+    for (const char* bad : {"", " 1s", "1s\n", "abc", "1", "-", "+", "1d", "5S", "1m 30s", "PT90S", ".s",
+                            "9223372037s"})
         EXPECT_FALSE(docuconf::parse_duration(DurationEncoding::Go, bad)) << bad;
 }
 
@@ -38,7 +46,12 @@ TEST(Duration, Iso8601) {
     EXPECT_EQ(ok(DurationEncoding::Iso8601, "PT0.001S"), 1ms);
     EXPECT_EQ(ok(DurationEncoding::Iso8601, "P1DT2H3M4S"), 93784s);
     EXPECT_EQ(ok(DurationEncoding::Iso8601, "PT0S"), 0s);
-    for (const char* bad : {"P", "PT", "1m30s", "PT1H30", "P1Y", "PT-1S", " PT1S", "90", "PT1S2M"})
+    EXPECT_EQ(ok(DurationEncoding::Iso8601, "PT1,5S"), 1500ms);
+    EXPECT_EQ(ok(DurationEncoding::Iso8601, "P1DT2H"), 26h);
+    EXPECT_EQ(ok(DurationEncoding::Iso8601, "PT1.5H"), 90min);
+    EXPECT_EQ(ok(DurationEncoding::Iso8601, "P0.5D"), 12h);
+    for (const char* bad : {"P", "PT", "1m30s", "PT1H30", "P1Y", "P1M", "P1W", "PT-1S", "-PT5S", " PT1S", "90",
+                            "PT1S2M", "pt90s", "PT.5S", "PT1.S"})
         EXPECT_FALSE(docuconf::parse_duration(DurationEncoding::Iso8601, bad)) << bad;
 }
 

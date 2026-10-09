@@ -1,5 +1,7 @@
 // File inputs (SPEC §4.6, §11.2 item 7): declaration rules and boot checks.
 #include <cerrno>
+#include <cmath>
+#include <stdexcept>
 #include <cstring>
 #include <fstream>
 #include <set>
@@ -97,8 +99,13 @@ std::vector<std::string> validate_files(std::vector<FileSpec>& files, const std:
             bad("reload must be \"restart\"");
         }
         if (f.max_size && *f.max_size == 0) bad("maxSize must be positive");
-        if (f.deprecated && !f.replaced_by.empty() && !is_input_name(f.replaced_by))
-            bad("replacedBy must be a file input name");
+        if (f.deprecated) {
+            if (auto d = check_deprecated(*f.deprecated); !d.empty()) bad(d);
+            if (f.required)
+                bad("a required file input cannot be deprecated: the platform could not stop supplying it; make it "
+                    "optional first");
+            if (!f.replaced_by.empty() && !is_input_name(f.replaced_by)) bad("replacedBy must be a file input name");
+        }
         switch (f.type) {
             case FileType::Config:
                 if (f.format != "json" && f.format != "yaml" && f.format != "toml")
@@ -274,18 +281,162 @@ json toml_to_json(const toml::node& n) {
     return ss.str();
 }
 
-void check_config(Ctx& c, LoadedFile& lf) {
-    std::string text = lf.content;
+}  // namespace
+
+#endif
+
+nlohmann::json parse_structured(const std::string& format, const std::string& content) {
+    std::string text = content;
     if (text.rfind("\xEF\xBB\xBF", 0) == 0) text.erase(0, 3);  // a UTF-8 byte-order mark
+    if (format == "json") return nlohmann::json::parse(text);
+#if DOCUCONF_FILE_INPUTS
+    if (format == "yaml") return yaml_to_json(YAML::Load(text));
+    if (format == "toml") return toml_to_json(toml::parse(text));
+#endif
+    throw std::runtime_error("this build of docuconf cannot read " + format +
+                             " (it was built with DOCUCONF_FILE_INPUTS=OFF)");
+}
+
+std::string under_root(const std::string& file_root, const std::string& path) {
+    if (file_root.empty() || path.empty() || path[0] != '/') return path;
+    std::string root = file_root;
+    while (root.size() > 1 && root.back() == '/') root.pop_back();
+    return root + path;
+}
+
+namespace {
+
+std::string json_kind(const nlohmann::json& j) {
+    if (j.is_object()) return "an object";
+    if (j.is_array()) return "a list";
+    if (j.is_string()) return "a string";
+    if (j.is_boolean()) return "a bool";
+    if (j.is_number()) return "a number";
+    return "null";
+}
+
+// A native scalar as the env value it stands for (SPEC §4.7): a string as
+// it is, a bool as true or false, a number with an integral value as a
+// base-10 integer (50.0 is 50), any other in shortest round-trip decimal.
+std::optional<std::string> scalar_text(const nlohmann::json& x) {
+    if (x.is_string()) return x.get<std::string>();
+    if (x.is_boolean()) return std::string(x.get<bool>() ? "true" : "false");
+    if (x.is_number_unsigned()) return std::to_string(x.get<std::uint64_t>());
+    if (x.is_number_integer()) return std::to_string(x.get<std::int64_t>());
+    if (x.is_number_float()) {
+        double f = x.get<double>();
+        if (std::isfinite(f) && std::trunc(f) == f && std::fabs(f) < 9223372036854775808.0)
+            return std::to_string(static_cast<std::int64_t>(f));
+        return format_float(f);
+    }
+    return std::nullopt;
+}
+
+// The value at a key path, matching keys exactly; nullptr when absent.
+const nlohmann::json* lookup_key(const nlohmann::json& doc, const std::string& key, const std::string& sep) {
+    const nlohmann::json* cur = &doc;
+    std::size_t start = 0;
+    while (true) {
+        std::size_t p = key.find(sep, start);
+        std::string part = key.substr(start, p == std::string::npos ? std::string::npos : p - start);
+        if (!cur->is_object()) return nullptr;
+        auto it = cur->find(part);
+        if (it == cur->end()) return nullptr;
+        cur = &*it;
+        if (p == std::string::npos) return cur;
+        start = p + sep.size();
+    }
+}
+
+}  // namespace
+
+std::map<std::string, Layer> load_overlays(const std::vector<Overlay>& overlays, const std::vector<VarSpec>& vars,
+                                           const std::string& selector, const std::string& file_root,
+                                           std::vector<Violation>& violations, std::vector<std::string>& warnings) {
+    std::map<std::string, Layer> out;
+    for (const auto& ov : overlays) {
+        std::string path = under_root(file_root, ov.path);
+        auto fail = [&](Code code, const std::string& m) { violations.push_back(Violation{ov.name, code, m}); };
+        struct stat st {};
+        if (::stat(path.c_str(), &st) != 0) {
+            if (errno == ENOENT || errno == ENOTDIR) continue;  // an overlay is optional
+            fail(Code::FileUnreadable, path + " cannot be read: " + std::strerror(errno));
+            continue;
+        }
+        std::ifstream in(path, std::ios::binary);
+        if (!in || S_ISDIR(st.st_mode)) {
+            fail(Code::FileUnreadable, path + " cannot be read");
+            continue;
+        }
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        nlohmann::json doc;
+        try {
+            doc = parse_structured(ov.format, ss.str());
+        } catch (const std::exception& e) {
+            fail(Code::FileMalformed, path + " is not valid " + ov.format + ": " + e.what());
+            continue;
+        }
+        if (!doc.is_object()) {
+            fail(Code::FileMalformed, path + " does not hold an object at its top level");
+            continue;
+        }
+        std::string source = "overlay " + ov.name;
+        for (const auto& v : vars) {
+            if (v.config_key.empty() || v.name == selector) continue;
+            const nlohmann::json* val = lookup_key(doc, v.config_key, ov.key_separator);
+            if (!val || val->is_null()) continue;  // null is unset
+            if (auto prev = out.find(v.name); prev != out.end()) {
+                warnings.push_back(v.name + " is set in " + prev->second.source + " and in " + source +
+                                   "; the first wins");
+                continue;
+            }
+            Layer l;
+            l.source = source;
+            auto bad = [&](const std::string& m) {
+                violations.push_back(Violation{v.name, Code::InvalidType, source + ", at " + v.config_key + ": " + m});
+                l.bad = true;
+            };
+            if (v.secret) {
+                // Never print it: the value is secret material in a ConfigMap.
+                bad("is secret, and a secret is never read from an overlay; supply it through the environment");
+            } else if (v.type == VarType::Json) {
+                l.raws.push_back(val->dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+            } else if (v.type == VarType::List || v.type == VarType::KeySet) {
+                if (!val->is_array()) {
+                    bad("is " + json_kind(*val) + ", not a list");
+                } else {
+                    l.items = true;
+                    for (std::size_t i = 0; i < val->size(); ++i) {
+                        auto t = scalar_text((*val)[i]);
+                        if (!t) {
+                            bad("item " + std::to_string(i) + " is " + json_kind((*val)[i]) + ", not a scalar");
+                            break;
+                        }
+                        l.raws.push_back(*t);
+                    }
+                }
+            } else if (auto t = scalar_text(*val)) {
+                // An empty value is unset, as in the environment.
+                if (t->empty() && v.type != VarType::String) continue;
+                l.raws.push_back(*t);
+            } else {
+                bad("is " + json_kind(*val) + ", not a scalar");
+            }
+            out[v.name] = std::move(l);
+        }
+    }
+    return out;
+}
+
+#if DOCUCONF_FILE_INPUTS
+
+namespace {
+
+void check_config(Ctx& c, LoadedFile& lf) {
     json doc;
     try {
-        if (c.f.format == "json") {
-            doc = json::parse(text);
-        } else if (c.f.format == "yaml") {
-            doc = yaml_to_json(YAML::Load(text));
-        } else {
-            doc = toml_to_json(toml::parse(text));
-        }
+        doc = parse_structured(c.f.format, lf.content);
     } catch (const std::exception& e) {
         std::string why = e.what();
         if (c.f.secret) why = "parse error";
@@ -333,11 +484,7 @@ std::map<std::string, LoadedFile> load_files(const std::vector<FileSpec>& files,
             auto it = env.find(f.path_env);
             if (it != env.end() && !it->second.empty()) path = it->second;
         }
-        if (!file_root.empty() && !path.empty() && path[0] == '/') {
-            std::string root = file_root;
-            while (root.size() > 1 && root.back() == '/') root.pop_back();
-            path = root + path;
-        }
+        path = under_root(file_root, path);
         lf.path = path;
         Ctx c{f, violations};
         std::size_t before = violations.size();

@@ -59,21 +59,30 @@ jobs:
           go-version: stable
       - name: Install cue
         run: go install cuelang.org/go/cmd/cue@${CUE_VERSION}
+      # The shared export check (tests/export_fixture_test.cpp) runs
+      # `docuconf conformance export` against conformance/export/golden.cue.
+      - name: Install the docuconf CLI
+        working-directory: docuconf-go/cmd/docuconf
+        run: go install .
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
       - name: Build
         run: cmake --build build
-      - name: Test (including conformance, the README blocks and the compile-fail checks)
+      - name: Test (including conformance, the export fixture, the README blocks and the compile-fail checks)
         env:
           DOCUCONF_CONFORMANCE: ${{ github.workspace }}/docuconf-go/conformance/cases.json
           DOCUCONF_REQUIRE_CONFORMANCE: "1"
+          # Every conformance case must run: a skipped case fails the test.
+          DOCUCONF_REQUIRE_NO_SKIPS: "1"
           DOCUCONF_SPEC_CUE: ${{ github.workspace }}/docuconf-go/spec/cue
+          DOCUCONF_CLI: /home/runner/go/bin/docuconf
           CUE: /home/runner/go/bin/cue
         run: ctest --test-dir build --output-on-failure
       - name: Run scripts/conformance.sh
         env:
           # Reuses the build above.
           DOCUCONF_BUILD_DIR: build
+          DOCUCONF_CLI: /home/runner/go/bin/docuconf
           CUE: /home/runner/go/bin/cue
         run: DOCUCONF_GO_DIR="$GITHUB_WORKSPACE/docuconf-go" scripts/conformance.sh
       - name: cue vet the golden export and the example contract
@@ -129,6 +138,8 @@ jobs:
           repository: docuconf/docuconf-go
           ref: main
           path: docuconf-go
+      # Without file inputs the runner cannot read files or overlays, so it
+      # skips those cases here; the test job above runs all of them.
       - name: Configure, build and test
         env:
           DOCUCONF_CONFORMANCE: ${{ github.workspace }}/docuconf-go/conformance/cases.json

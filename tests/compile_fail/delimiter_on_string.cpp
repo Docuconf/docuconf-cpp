@@ -1,4 +1,4 @@
-// Must not compile. Expected: delimiter() applies to a std::vector variable
+// Must not compile. Expected: delimiter() applies to a std::vector or a docuconf::KeySet variable
 #include <docuconf/docuconf.hpp>
 
 int main() {

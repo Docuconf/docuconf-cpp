@@ -4,7 +4,7 @@ A tiny HTTP service ([cpp-httplib](https://github.com/yhirose/cpp-httplib)) whos
 with docuconf next to a CLI11 app. It shows:
 
 - seven environment variables with the metadata the contract needs (descriptions, secrets, ranges, an enum, a
-  URL scheme, lists and a duration);
+  URL scheme, a list, a key set and a duration);
 - `GET /healthz`, which returns `ok`, and `GET /config`, which returns the typed configuration as JSON with the
   secrets redacted, and `POST /webhooks/payments`, which checks a signature against a key set;
 - the boot check: a bad environment stops the service with every problem listed;
@@ -20,7 +20,7 @@ with docuconf next to a CLI11 app. It shows:
 | `ALLOWED_ORIGINS` | list of strings (comma-separated) | at least 1 item; default `http://localhost:3000` |
 | `REQUEST_TIMEOUT` | duration (Go syntax, `30s`) | 1s–5m, default `30s` |
 | `WORKER_COUNT` | int | 1–64, default 4 |
-| `WEBHOOK_KEYS` | list of strings (comma-separated) | secret, optional; 1–2 keys of 32–256 characters each |
+| `WEBHOOK_KEYS` | key set (comma-separated) | always secret, optional; 1–2 keys of 32–256 characters each |
 
 They are read from the environment only, which is what the platform validates before deploy. `--help` lists
 them in an `Environment variables` section. `PORT` also opts in to a command-line flag, `--port`, for local
@@ -58,14 +58,18 @@ In Kubernetes the same lines go to `/dev/termination-log`, so `kubectl describe 
 
 ## Rotate a key
 
-`WEBHOOK_KEYS` is a key set: `POST /webhooks/payments` accepts a body whose `X-Signature` header is the hex
-HMAC-SHA256 of the body under any key in the list ([`webhook.hpp`](webhook.hpp)). A variable is read once, at
+`WEBHOOK_KEYS` is a key set, a `docuconf::KeySet`: `POST /webhooks/payments` accepts a body whose `X-Signature`
+header is the hex HMAC-SHA256 of the body under any key in the set, checked with `KeySet::verify`, which tries
+every key ([`webhook.hpp`](webhook.hpp)). A variable is read once, at
 start, so a new key reaches the service only when the pods restart; with two keys valid at once, no webhook is
 turned away while that happens:
 
 1. Add the new key as the second item (`old,new` in the Secret), and roll out.
 2. Switch the sender to the new key.
 3. Remove the old key (`new`), and roll out.
+
+The generated [`CONFIG.md`](CONFIG.md#webhook_keys) prints these steps for every key set, so the declaration's
+doc comment does not repeat them.
 
 The contract allows 1 or 2 keys of 32 to 256 characters each, so a trailing comma or a truncated key stops the
 service at boot instead of locking out the sender:
@@ -74,7 +78,7 @@ service at boot instead of locking out the sender:
 $ DATABASE_URL=postgres://orders:pw@localhost:5432/orders WEBHOOK_KEYS=old-webhook-key-0123456789abcdef0123, \
     ./build/examples/orders/orders
 docuconf: 1 configuration problem:
-  WEBHOOK_KEYS: value has item 1 of 0 characters, below itemMinLength 32 (out_of_range)
+  WEBHOOK_KEYS: key 1 is empty (a stray separator?) (out_of_range)
 ```
 
 In a values file, the key set is a `secretKeyRef`:

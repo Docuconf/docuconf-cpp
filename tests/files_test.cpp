@@ -154,6 +154,10 @@ TEST(Tls, GarbageCertificate) {
     d.write("etc/svc/tls/tls.crt", "not a certificate");
     d.write("etc/svc/tls/tls.key", make_cert({}).key_pem());
     Tls t;
+    // No PEM certificate at all is file_malformed (SPEC §11.2 item 5).
+    EXPECT_EQ(codes(t.s, root_env(d), "serving-tls"), std::vector<Code>{Code::FileMalformed});
+    // A PEM block that does not parse is certificate_invalid.
+    d.write("etc/svc/tls/tls.crt", "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n");
     EXPECT_EQ(codes(t.s, root_env(d), "serving-tls"), std::vector<Code>{Code::CertificateInvalid});
 }
 
