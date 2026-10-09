@@ -387,6 +387,12 @@ Lengths count characters, meaning Unicode code points (UTF-8 lead bytes), never 
 never its value. Item lengths on an int list, or a length method on another type, do not compile; a `min_length`
 or `pattern` on a `url` and `item_min_length` above `item_max_length` are declaration errors.
 
+A list can be secret, such as a key set: `.secret()` on a `std::vector<std::string>` with item lengths, so
+`WEBHOOK_KEYS=old,new` holds two keys while one is rotated and an empty or truncated key fails at boot. Accepting
+either key is how a key is rotated without downtime
+([spec section 6.1](https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md#61-rotation)); the
+[orders example](examples/orders/README.md#rotate-a-key) declares one.
+
 ### Command-line flags
 
 Variables are environment-only by default: the platform validates the environment before deploy (SPEC §1.2),

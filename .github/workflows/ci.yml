@@ -171,7 +171,9 @@ jobs:
       - name: Build the example against the SDK in this repository
         run: |
           cmake -S examples/orders -B build-orders -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-orders --target orders
+          cmake --build build-orders --target orders orders_webhook_test
+      - name: Test the webhook key set
+        run: ./build-orders/orders_webhook_test
       # metadata.generator.version is ignored: release PRs bump it.
       - name: Re-export the contract and compare
         run: |

@@ -23,5 +23,13 @@ if(NOT TARGET httplib::httplib)
   add_library(httplib::httplib ALIAS orders_httplib)
 endif()
 
+# OpenSSL's libcrypto computes the webhook HMACs.
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+
 add_executable(orders main.cpp)
-target_link_libraries(orders PRIVATE docuconf::docuconf httplib::httplib)
+target_link_libraries(orders PRIVATE docuconf::docuconf httplib::httplib OpenSSL::Crypto)
+
+# The key set's rotation and boot checks; CI runs it after the build.
+add_executable(orders_webhook_test webhook_test.cpp)
+target_link_libraries(orders_webhook_test PRIVATE docuconf::docuconf OpenSSL::Crypto)
+add_test(NAME orders_webhook_test COMMAND orders_webhook_test)
