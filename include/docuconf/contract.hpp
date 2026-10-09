@@ -29,6 +29,7 @@
 #include "errors.hpp"
 #include "keyset.hpp"
 #include "spec.hpp"
+#include "watched.hpp"
 
 namespace docuconf {
 
@@ -100,8 +101,18 @@ public:
     /// error.
     Values load_process_env() const;
 
+    /// Like load(env), for a contract with inputs declared `reload: watch`
+    /// (file inputs and overlays, SPEC §4.6.2, §4.7): the result's
+    /// current() is reloaded, through the same checks, when a watched input's
+    /// files change. Inputs declared `restart` and the environment keep
+    /// their boot values. A reload that fails its checks keeps the previous
+    /// Values and reports the violations to on_warning. Throws
+    /// ValidationError when the first load fails.
+    Watched<Values> watch(const Env& env) const;
+
     /// Where warnings go: a deprecated input that is set, a variable set
-    /// both in the environment and in an overlay. They name the input,
+    /// both in the environment and in an overlay, a watched input whose
+    /// change failed its checks. They name the input,
     /// never its value. Default: standard error.
     Contract& on_warning(std::function<void(const std::string&)> sink);
 

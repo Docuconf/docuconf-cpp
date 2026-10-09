@@ -1,2 +1,0 @@
-docuconf: 1 configuration problem:
-  WEBHOOK_KEYS: value has 3 items, above maxItems 2 (too_many_items)

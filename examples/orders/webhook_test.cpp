@@ -38,7 +38,8 @@ std::optional<docuconf::KeySet> load(const std::string& value) {
     docuconf::Declaration config{app, "orders"};
     std::optional<docuconf::KeySet> keys;
     orders::declare_webhook_keys(config, keys);
-    config.load({{"WEBHOOK_KEYS", value}, {"DOCUCONF_TERMINATION_LOG", "-"}});
+    // No DOCUCONF_TERMINATION_LOG: load() then writes no termination log.
+    config.load({{"WEBHOOK_KEYS", value}});
     return keys;
 }
 

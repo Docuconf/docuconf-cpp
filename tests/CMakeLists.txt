@@ -23,7 +23,8 @@ if(DOCUCONF_FILE_INPUTS)
     files_test.cpp
     keyset_test.cpp
     layers_test.cpp
-    load_test.cpp)
+    load_test.cpp
+    watch_test.cpp)
   target_link_libraries(docuconf_tests PRIVATE docuconf::docuconf GTest::gtest_main OpenSSL::Crypto)
 else()
   # The environment-only build: everything that does not need file inputs.

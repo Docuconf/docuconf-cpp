@@ -4,6 +4,7 @@
 #include <iostream>
 #include <set>
 #include <limits>
+#include <memory>
 
 #include "docuconf/duration.hpp"
 #include "internal.hpp"
@@ -211,9 +212,7 @@ Overlay overlay_from_json(const std::string& name, const json& j, std::vector<st
     ov.key_separator = f.str("keySeparator").value_or("");
     if (ov.key_separator != ":" && ov.key_separator != ".") f.bad("keySeparator must be \":\" or \".\"");
     ov.reload = f.str("reload").value_or("restart");
-    if (ov.reload == "watch")
-        f.bad("reload \"watch\" is not supported: docuconf reads overlays once, at boot; use \"restart\"");
-    else if (ov.reload != "restart") f.bad("reload must be \"restart\"");
+    if (ov.reload != "restart" && ov.reload != "watch") f.bad("reload must be \"restart\" or \"watch\"");
     return ov;
 }
 
@@ -420,18 +419,40 @@ Contract& Contract::on_warning(std::function<void(const std::string&)> sink) {
     return *this;
 }
 
-Values Contract::load(const Env& env) const {
+namespace {
+
+// What a reload keeps from boot: the data of every overlay and the value of
+// every file input that is not watched (`reload: restart` means read once).
+struct Pins {
+    std::map<std::string, std::optional<json>> overlays;
+    std::map<std::string, std::optional<FileValue>> files;
+};
+
+// Loads the contract. Without `pins`, everything is read. With `pins` and
+// `reload`, restart inputs come from the pins; without `reload`, the pins
+// are filled in. Throws ValidationError.
+Values load_contract(const Contract& c, const Env& env, Pins* pins, bool reload,
+                     std::vector<std::string>& warnings) {
     std::vector<Violation> violations;
-    std::vector<std::string> warnings;
     auto root_it = env.find("DOCUCONF_FILE_ROOT");
     std::string root = root_it == env.end() ? "" : root_it->second;
-    std::string selector = profiles_ ? profiles_->selector : "";
-    auto layers = detail::load_overlays(overlays_, vars_, selector, root, violations, warnings);
-    auto values =
-        detail::load_vars(vars_, env, profiles_ ? &*profiles_ : nullptr, violations, &warnings, &layers);
-    auto loaded = detail::load_files(files_, env, values, root, violations);
+    const auto& profiles = c.profiles();
+    std::string selector = profiles ? profiles->selector : "";
+    std::map<std::string, std::optional<json>> docs;
+    if (pins && reload) docs = pins->overlays;
+    auto layers = detail::load_overlays(c.overlays(), c.vars(), selector, root, violations, warnings,
+                                        pins ? &docs : nullptr);
+    auto values = detail::load_vars(c.vars(), env, profiles ? &*profiles : nullptr, violations, &warnings, &layers);
+    std::vector<FileSpec> to_read;
+    for (const auto& f : c.files())
+        if (!(pins && reload && f.reload != "watch")) to_read.push_back(f);
+    auto loaded = detail::load_files(to_read, env, values, root, violations);
     std::map<std::string, std::optional<FileValue>> files;
-    for (const auto& f : files_) {
+    for (const auto& f : c.files()) {
+        if (pins && reload && f.reload != "watch") {
+            files[f.name] = pins->files[f.name];
+            continue;
+        }
         auto it = loaded.find(f.name);
         if (it == loaded.end() || !it->second.present) {
             files[f.name] = std::nullopt;
@@ -443,17 +464,84 @@ Values Contract::load(const Env& env) const {
                                (f.replaced_by.empty() ? "" : "; use " + f.replaced_by));
         files[f.name] = FileValue{f.type, l.path, l.content, l.key, l.ca, l.document, l.certificates};
     }
-    for (const auto& w : warnings) {
-        if (warn_) warn_(w);
-        else std::cerr << "docuconf: warning: " << w << std::endl;
-    }
     if (!violations.empty()) throw ValidationError(std::move(violations));
+    if (pins && !reload) {
+        for (const auto& ov : c.overlays())
+            if (ov.reload != "watch") pins->overlays[ov.name] = docs[ov.name];
+        for (const auto& f : c.files())
+            if (f.reload != "watch") pins->files[f.name] = files[f.name];
+    }
     std::vector<std::string> secrets;
-    for (const auto& v : vars_)
+    for (const auto& v : c.vars())
         if (v.secret) secrets.push_back(v.name);
-    for (const auto& f : files_)
+    for (const auto& f : c.files())
         if (f.secret) secrets.push_back(f.name);
     return Values(std::move(values), std::move(secrets), std::move(files));
+}
+
+std::function<void(const std::string&)> sink_or_stderr(const std::function<void(const std::string&)>& sink) {
+    if (sink) return sink;
+    return [](const std::string& w) { std::cerr << "docuconf: warning: " << w << std::endl; };
+}
+
+}  // namespace
+
+Values Contract::load(const Env& env) const {
+    std::vector<std::string> warnings;
+    auto warn = sink_or_stderr(warn_);
+    try {
+        Values v = load_contract(*this, env, nullptr, false, warnings);
+        for (const auto& w : warnings) warn(w);
+        return v;
+    } catch (const ValidationError&) {
+        for (const auto& w : warnings) warn(w);
+        throw;
+    }
+}
+
+Watched<Values> Contract::watch(const Env& env) const {
+    auto root_it = env.find("DOCUCONF_FILE_ROOT");
+    std::string root = root_it == env.end() ? "" : root_it->second;
+    std::vector<std::string> paths;
+    for (const auto& f : files_)
+        if (f.reload == "watch") {
+            auto p = detail::watch_paths(f, detail::resolved_path(f, env, root));
+            paths.insert(paths.end(), p.begin(), p.end());
+        }
+    for (const auto& ov : overlays_)
+        if (ov.reload == "watch") paths.push_back(detail::under_root(root, ov.path));
+    std::string fingerprint = detail::stat_fingerprint(paths);
+
+    auto warn = sink_or_stderr(warn_);
+    auto pins = std::make_shared<Pins>();
+    auto seen = std::make_shared<std::set<std::string>>();
+    std::vector<std::string> warnings;
+    std::shared_ptr<const Values> first;
+    try {
+        first = std::make_shared<const Values>(load_contract(*this, env, pins.get(), false, warnings));
+    } catch (const ValidationError&) {
+        for (const auto& w : warnings) warn(w);
+        throw;
+    }
+    for (const auto& w : warnings)
+        if (seen->insert(w).second) warn(w);
+
+    // The loader runs with the watch's check lock held, one reload at a time.
+    Contract contract = *this;
+    auto loader = [contract, env, pins, seen, warn](std::vector<Violation>& out) -> std::shared_ptr<const Values> {
+        std::vector<std::string> ws;
+        try {
+            auto v = std::make_shared<const Values>(load_contract(contract, env, pins.get(), true, ws));
+            for (const auto& w : ws)
+                if (seen->insert(w).second) warn(w);
+            return v;
+        } catch (const ValidationError& e) {
+            out = e.violations();
+            return nullptr;
+        }
+    };
+    return Watched<Values>(std::make_shared<detail::WatchCore<Values>>(name_, std::move(paths), std::move(fingerprint),
+                                                                       std::move(first), loader, warn));
 }
 
 Values Contract::load_process_env() const {

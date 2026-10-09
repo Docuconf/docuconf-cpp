@@ -3,6 +3,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -93,11 +94,7 @@ std::vector<std::string> validate_files(std::vector<FileSpec>& files, const std:
             if (var(f.path_env)) bad("pathEnv " + f.path_env + " must not also be a declared variable");
             if (!path_envs.insert(f.path_env).second) bad("pathEnv " + f.path_env + " is used by another file input");
         }
-        if (f.reload == "watch") {
-            bad("reload \"watch\" is not supported: docuconf reads file inputs once, at boot; use \"restart\"");
-        } else if (f.reload != "restart") {
-            bad("reload must be \"restart\"");
-        }
+        if (f.reload != "restart" && f.reload != "watch") bad("reload must be \"restart\" or \"watch\"");
         if (f.max_size && *f.max_size == 0) bad("maxSize must be positive");
         if (f.deprecated) {
             if (auto d = check_deprecated(*f.deprecated); !d.empty()) bad(d);
@@ -304,6 +301,38 @@ std::string under_root(const std::string& file_root, const std::string& path) {
     return root + path;
 }
 
+std::string resolved_path(const FileSpec& f, const Env& env, const std::string& file_root) {
+    std::string path = f.path;
+    if (!f.path_env.empty()) {
+        auto it = env.find(f.path_env);
+        if (it != env.end() && !it->second.empty()) path = it->second;
+    }
+    return under_root(file_root, path);
+}
+
+std::vector<std::string> watch_paths(const FileSpec& f, const std::string& resolved) {
+    if (f.type == FileType::Tls) return {resolved + "/tls.crt", resolved + "/tls.key", resolved + "/ca.crt"};
+    return {resolved};
+}
+
+std::string stat_fingerprint(const std::vector<std::string>& paths) {
+    std::string out;
+    for (const auto& p : paths) {
+        struct stat st {};
+        // stat follows symlinks: when Kubernetes swaps the ..data symlink of
+        // a volume, the file it now points to has another inode.
+        if (::stat(p.c_str(), &st) != 0) {
+            out += "-;";
+            continue;
+        }
+        std::error_code ec;
+        auto mtime = std::filesystem::last_write_time(p, ec);
+        out += std::to_string(st.st_dev) + ":" + std::to_string(st.st_ino) + ":" + std::to_string(st.st_size) + ":" +
+               (ec ? std::string("?") : std::to_string(mtime.time_since_epoch().count())) + ";";
+    }
+    return out;
+}
+
 namespace {
 
 std::string json_kind(const nlohmann::json& j) {
@@ -348,43 +377,60 @@ const nlohmann::json* lookup_key(const nlohmann::json& doc, const std::string& k
     }
 }
 
+// The overlay's data: nullopt when it is missing (an overlay is optional)
+// or does not read or parse (reported in `violations`).
+std::optional<nlohmann::json> read_overlay(const Overlay& ov, const std::string& file_root,
+                                           std::vector<Violation>& violations) {
+    std::string path = under_root(file_root, ov.path);
+    auto fail = [&](Code code, const std::string& m) { violations.push_back(Violation{ov.name, code, m}); };
+    struct stat st {};
+    if (::stat(path.c_str(), &st) != 0) {
+        if (errno != ENOENT && errno != ENOTDIR) fail(Code::FileUnreadable, path + " cannot be read: " + std::strerror(errno));
+        return std::nullopt;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in || S_ISDIR(st.st_mode)) {
+        fail(Code::FileUnreadable, path + " cannot be read");
+        return std::nullopt;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    nlohmann::json doc;
+    try {
+        doc = parse_structured(ov.format, ss.str());
+    } catch (const std::exception& e) {
+        fail(Code::FileMalformed, path + " is not valid " + ov.format + ": " + e.what());
+        return std::nullopt;
+    }
+    if (!doc.is_object()) {
+        fail(Code::FileMalformed, path + " does not hold an object at its top level");
+        return std::nullopt;
+    }
+    return doc;
+}
+
 }  // namespace
 
 std::map<std::string, Layer> load_overlays(const std::vector<Overlay>& overlays, const std::vector<VarSpec>& vars,
                                            const std::string& selector, const std::string& file_root,
-                                           std::vector<Violation>& violations, std::vector<std::string>& warnings) {
+                                           std::vector<Violation>& violations, std::vector<std::string>& warnings,
+                                           std::map<std::string, std::optional<nlohmann::json>>* docs) {
     std::map<std::string, Layer> out;
     for (const auto& ov : overlays) {
-        std::string path = under_root(file_root, ov.path);
-        auto fail = [&](Code code, const std::string& m) { violations.push_back(Violation{ov.name, code, m}); };
-        struct stat st {};
-        if (::stat(path.c_str(), &st) != 0) {
-            if (errno == ENOENT || errno == ENOTDIR) continue;  // an overlay is optional
-            fail(Code::FileUnreadable, path + " cannot be read: " + std::strerror(errno));
-            continue;
+        std::optional<nlohmann::json> doc;
+        auto pinned = docs ? docs->find(ov.name) : std::map<std::string, std::optional<nlohmann::json>>::iterator{};
+        if (docs && pinned != docs->end()) {
+            doc = pinned->second;
+        } else {
+            std::size_t before = violations.size();
+            doc = read_overlay(ov, file_root, violations);
+            if (docs && violations.size() == before) (*docs)[ov.name] = doc;
         }
-        std::ifstream in(path, std::ios::binary);
-        if (!in || S_ISDIR(st.st_mode)) {
-            fail(Code::FileUnreadable, path + " cannot be read");
-            continue;
-        }
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        nlohmann::json doc;
-        try {
-            doc = parse_structured(ov.format, ss.str());
-        } catch (const std::exception& e) {
-            fail(Code::FileMalformed, path + " is not valid " + ov.format + ": " + e.what());
-            continue;
-        }
-        if (!doc.is_object()) {
-            fail(Code::FileMalformed, path + " does not hold an object at its top level");
-            continue;
-        }
+        if (!doc) continue;
         std::string source = "overlay " + ov.name;
         for (const auto& v : vars) {
             if (v.config_key.empty() || v.name == selector) continue;
-            const nlohmann::json* val = lookup_key(doc, v.config_key, ov.key_separator);
+            const nlohmann::json* val = lookup_key(*doc, v.config_key, ov.key_separator);
             if (!val || val->is_null()) continue;  // null is unset
             if (auto prev = out.find(v.name); prev != out.end()) {
                 warnings.push_back(v.name + " is set in " + prev->second.source + " and in " + source +
@@ -479,12 +525,7 @@ std::map<std::string, LoadedFile> load_files(const std::vector<FileSpec>& files,
     std::map<std::string, LoadedFile> out;
     for (const auto& f : files) {
         LoadedFile& lf = out[f.name];
-        std::string path = f.path;
-        if (!f.path_env.empty()) {
-            auto it = env.find(f.path_env);
-            if (it != env.end() && !it->second.empty()) path = it->second;
-        }
-        path = under_root(file_root, path);
+        std::string path = resolved_path(f, env, file_root);
         lf.path = path;
         Ctx c{f, violations};
         std::size_t before = violations.size();

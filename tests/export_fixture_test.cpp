@@ -8,14 +8,11 @@
 // the CLI through DOCUCONF_CLI, then `docuconf` on PATH. Without either the
 // test skips, unless DOCUCONF_REQUIRE_CONFORMANCE=1 (CI sets it).
 //
-// One known difference: the fixture declares `reload: watch` on `settings`
-// and `serving-tls`. docuconf reads file inputs once, at boot, and rejects
-// `watch` at declaration time (SPEC §11.2 item 8), so those two inputs
-// export the default, `restart`. The test requires exactly those two
-// differences and no other.
+// The export must match the golden contract exactly, including the
+// `reload: watch` that `settings` and `serving-tls` declare through their
+// docuconf::Watched targets.
 #include <gtest/gtest.h>
 
-#include <sstream>
 #include <sys/wait.h>
 
 #include "test_util.hpp"
@@ -76,8 +73,9 @@ struct Fixture {
     std::optional<std::int64_t> old_port;
     std::optional<std::string> partner_password;
 
-    docuconf::ConfigFile<Settings> settings, rules, flags;
-    docuconf::TlsKeyPair serving_tls;
+    docuconf::Watched<docuconf::ConfigFile<Settings>> settings;
+    docuconf::ConfigFile<Settings> rules, flags;
+    docuconf::Watched<docuconf::TlsKeyPair> serving_tls;
     docuconf::CaBundle trust;
     docuconf::Keystore partner;
     docuconf::TextFile licence;
@@ -130,7 +128,7 @@ struct Fixture {
             .required()
             .path_env("SETTINGS_FILE")
             .max_size(65536)
-            .group("general");  // and reload watch, which this SDK rejects
+            .group("general");  // reload: watch, from the Watched target
         config.add_file("rules", rules, "Routing rules").path("/etc/app/rules/rules.yaml").format("yaml");
         config.add_file("flags", flags, "Feature defaults").path("/etc/app/flags/flags.toml").format("toml");
         config.add_file("serving-tls", serving_tls, "Certificate the service serves HTTPS with")
@@ -138,7 +136,7 @@ struct Fixture {
             .dns_names({"app.example.test", "api.example.test"})
             .key_algorithms({"ECDSA", "Ed25519"})
             .min_remaining(720h)
-            .require_ca();  // and reload watch, which this SDK rejects
+            .require_ca();  // reload: watch, from the Watched target
         config.add_file("trust", trust, "CAs the service trusts").path("/etc/app/trust/bundle.pem").min_certificates(2);
         config.add_file("partner", partner, "Client certificate for the partner API")
             .path("/etc/app/partner/keystore.p12")
@@ -202,23 +200,7 @@ TEST(ExportFixture, MatchesTheGoldenContract) {
     std::array<char, 4096> buf{};
     while (std::size_t n = fread(buf.data(), 1, buf.size(), p)) out.append(buf.data(), n);
     int rc = pclose(p);
-    // Exactly the reload differences, one line each, and nothing else.
-    std::vector<std::string> lines;
-    std::istringstream ss(out);
-    for (std::string line; std::getline(ss, line);)
-        if (!line.empty()) lines.push_back(line);
-    std::vector<std::string> unexpected;
-    int reload = 0;
-    for (const auto& l : lines) {
-        if (l.rfind("files.serving-tls.reload: golden \"watch\", exported \"restart\"", 0) == 0 ||
-            l.rfind("files.settings.reload: golden \"watch\", exported \"restart\"", 0) == 0)
-            ++reload;
-        else if (l.rfind("docuconf conformance: ", 0) != 0 || l.find(": 2 differences") == std::string::npos)
-            unexpected.push_back(l);
-    }
-    EXPECT_TRUE(WIFEXITED(rc) && WEXITSTATUS(rc) != 0) << out;  // it reports the differences
-    EXPECT_EQ(reload, 2) << out;
-    EXPECT_TRUE(unexpected.empty()) << out;
+    EXPECT_TRUE(WIFEXITED(rc) && WEXITSTATUS(rc) == 0) << out;
 }
 
 }  // namespace
