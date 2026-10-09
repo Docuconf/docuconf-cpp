@@ -19,6 +19,7 @@
 #include "docuconf/doc.hpp"
 #include "docuconf/errors.hpp"
 #include "docuconf/spec.hpp"
+#include "docuconf/watched.hpp"
 
 namespace docuconf {
 namespace detail {
@@ -113,12 +114,24 @@ nlohmann::json parse_structured(const std::string& format, const std::string& te
 /// strings. A missing overlay is skipped; one that does not parse, or is
 /// not an object, is file_malformed for the overlay. A bad value is
 /// invalid_type for the variable. A secret is never taken from an overlay.
+/// With `docs`, an overlay found there is not read again: its data (nullopt
+/// for a missing overlay) is used as it is. Every overlay that was read
+/// without a violation is added to it.
 std::map<std::string, Layer> load_overlays(const std::vector<Overlay>& overlays, const std::vector<VarSpec>& vars,
                                            const std::string& selector, const std::string& file_root,
-                                           std::vector<Violation>& violations, std::vector<std::string>& warnings);
+                                           std::vector<Violation>& violations, std::vector<std::string>& warnings,
+                                           std::map<std::string, std::optional<nlohmann::json>>* docs = nullptr);
 
 /// `path` under DOCUCONF_FILE_ROOT, when one is set and the path is absolute.
 std::string under_root(const std::string& file_root, const std::string& path);
+
+/// Where a file input is read: its pathEnv's value when set, else its path,
+/// under DOCUCONF_FILE_ROOT.
+std::string resolved_path(const FileSpec& f, const Env& env, const std::string& file_root);
+
+/// The files whose changes a watched input reloads on: the file, or a TLS
+/// directory's tls.crt, tls.key and ca.crt.
+std::vector<std::string> watch_paths(const FileSpec& f, const std::string& resolved);
 
 /// The loaded content of one file input, for binding.
 struct LoadedFile {

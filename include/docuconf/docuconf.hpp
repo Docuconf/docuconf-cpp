@@ -12,3 +12,4 @@
 #include "files.hpp"
 #include "keyset.hpp"
 #include "spec.hpp"
+#include "watched.hpp"

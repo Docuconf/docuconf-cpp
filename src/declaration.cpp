@@ -132,80 +132,91 @@ File& Declaration::new_file(std::string name, FileType type, std::string descrip
     return raw;
 }
 
+namespace detail {
 namespace {
-const detail::LoadedFile& lf(const void* p) { return *static_cast<const detail::LoadedFile*>(p); }
+const LoadedFile& lf(const void* p) { return *static_cast<const LoadedFile*>(p); }
 }  // namespace
 
-bool Declaration::loaded_present(const void* p) { return lf(p).present; }
-const std::string& Declaration::loaded_path(const void* p) { return lf(p).path; }
-const nlohmann::json& Declaration::loaded_document(const void* p) { return lf(p).document; }
+bool loaded_present(const void* p) { return lf(p).present; }
+const std::string& loaded_path(const void* p) { return lf(p).path; }
+const nlohmann::json& loaded_document(const void* p) { return lf(p).document; }
+
+#if DOCUCONF_FILE_INPUTS
+void file_target<TlsKeyPair>::assign(TlsKeyPair& target, const void* p) {
+    const auto& l = lf(p);
+    target = TlsKeyPair{};
+    target.present = l.present;
+    if (!l.present) return;
+    target.dir = l.path;
+    target.certificate_pem = l.content;
+    target.key_pem = l.key;
+    target.ca_pem = l.ca;
+}
+
+void file_target<CaBundle>::assign(CaBundle& target, const void* p) {
+    const auto& l = lf(p);
+    target = CaBundle{};
+    target.present = l.present;
+    if (!l.present) return;
+    target.path = l.path;
+    target.pem = l.content;
+    target.certificates = l.certificates;
+}
+
+void file_target<Keystore>::assign(Keystore& target, const void* p) {
+    const auto& l = lf(p);
+    target = Keystore{};
+    target.present = l.present;
+    if (!l.present) return;
+    target.path = l.path;
+    target.data = l.content;
+}
+
+void file_target<TextFile>::assign(TextFile& target, const void* p) {
+    const auto& l = lf(p);
+    target = TextFile{};
+    target.present = l.present;
+    if (!l.present) return;
+    target.path = l.path;
+    target.content = l.content;
+}
+
+void file_target<BinaryFile>::assign(BinaryFile& target, const void* p) {
+    const auto& l = lf(p);
+    target = BinaryFile{};
+    target.present = l.present;
+    if (!l.present) return;
+    target.path = l.path;
+    target.data = l.content;
+}
+#endif
+
+}  // namespace detail
 
 #if DOCUCONF_FILE_INPUTS
 File& Declaration::add_file(std::string name, TlsKeyPair& target, std::string description) {
     File& f = new_file(std::move(name), FileType::Tls, std::move(description));
-    f.assign_ = [&target](const void* p) {
-        const auto& l = lf(p);
-        target = TlsKeyPair{};
-        target.present = l.present;
-        if (!l.present) return;
-        target.dir = l.path;
-        target.certificate_pem = l.content;
-        target.key_pem = l.key;
-        target.ca_pem = l.ca;
-    };
+    f.assign_ = [&target](const void* p) { detail::file_target<TlsKeyPair>::assign(target, p); };
     return f;
 }
-
 File& Declaration::add_file(std::string name, CaBundle& target, std::string description) {
     File& f = new_file(std::move(name), FileType::CaBundle, std::move(description));
-    f.assign_ = [&target](const void* p) {
-        const auto& l = lf(p);
-        target = CaBundle{};
-        target.present = l.present;
-        if (!l.present) return;
-        target.path = l.path;
-        target.pem = l.content;
-        target.certificates = l.certificates;
-    };
+    f.assign_ = [&target](const void* p) { detail::file_target<CaBundle>::assign(target, p); };
     return f;
 }
-
 File& Declaration::add_file(std::string name, Keystore& target, std::string description) {
     File& f = new_file(std::move(name), FileType::Keystore, std::move(description));
-    f.assign_ = [&target](const void* p) {
-        const auto& l = lf(p);
-        target = Keystore{};
-        target.present = l.present;
-        if (!l.present) return;
-        target.path = l.path;
-        target.data = l.content;
-    };
+    f.assign_ = [&target](const void* p) { detail::file_target<Keystore>::assign(target, p); };
     return f;
 }
-
 File& Declaration::add_file(std::string name, TextFile& target, std::string description) {
     File& f = new_file(std::move(name), FileType::Text, std::move(description));
-    f.assign_ = [&target](const void* p) {
-        const auto& l = lf(p);
-        target = TextFile{};
-        target.present = l.present;
-        if (!l.present) return;
-        target.path = l.path;
-        target.content = l.content;
-    };
+    f.assign_ = [&target](const void* p) { detail::file_target<TextFile>::assign(target, p); };
     return f;
 }
-
 File& Declaration::add_file(std::string name, BinaryFile& target, std::string description) {
     File& f = new_file(std::move(name), FileType::Binary, std::move(description));
-    f.assign_ = [&target](const void* p) {
-        const auto& l = lf(p);
-        target = BinaryFile{};
-        target.present = l.present;
-        if (!l.present) return;
-        target.path = l.path;
-        target.data = l.content;
-    };
+    f.assign_ = [&target](const void* p) { detail::file_target<BinaryFile>::assign(target, p); };
     return f;
 }
 #endif
@@ -292,6 +303,13 @@ void Declaration::check() {
                 problems.push_back(f->spec_.name + ": cannot tell the config format from " +
                                    detail::quote(f->spec_.path) + "; call format(\"json\"|\"yaml\"|\"toml\")");
         }
+        if (f->spec_.reload == "watch" && !f->watch_)
+            problems.push_back(f->spec_.name +
+                               ": reload \"watch\" needs a docuconf::Watched target, which rereads the file when "
+                               "it changes; bind the input to one, or use \"restart\"");
+        else if (f->watch_ && f->spec_.reload != "watch")
+            problems.push_back(f->spec_.name + ": a docuconf::Watched target rereads the file, so its reload must be "
+                                               "\"watch\"; bind the input to a plain target for \"restart\"");
         specs.push_back(f->spec_);
     }
     auto fp = detail::validate_files(specs, var_specs());
@@ -381,8 +399,19 @@ void Declaration::load_env(const Env& env, const std::map<std::string, std::stri
     auto specs = var_specs();
     auto values = detail::load_vars(specs, env, nullptr, violations, &warnings);
     for (const auto& w : warnings) warn_(w);
-    auto root = env.find("DOCUCONF_FILE_ROOT");
-    auto files = detail::load_files(file_specs(), env, values, root == env.end() ? "" : root->second, violations);
+    auto root_it = env.find("DOCUCONF_FILE_ROOT");
+    std::string root = root_it == env.end() ? "" : root_it->second;
+    // A watched file's fingerprint is taken before it is read, so a change
+    // made while it is read is seen at the first check.
+    auto specs_now = file_specs();
+    std::map<std::string, std::pair<std::vector<std::string>, std::string>> watch_fps;
+    for (const auto& s : specs_now)
+        if (s.reload == "watch") {
+            auto paths = detail::watch_paths(s, detail::resolved_path(s, env, root));
+            std::string fp = detail::stat_fingerprint(paths);
+            watch_fps[s.name] = {std::move(paths), std::move(fp)};
+        }
+    auto files = detail::load_files(specs_now, env, values, root, violations);
     if (!violations.empty()) {
         for (auto& v : violations)
             if (auto it = sources.find(v.input); it != sources.end()) v.source = it->second;
@@ -399,6 +428,23 @@ void Declaration::load_env(const Env& env, const std::map<std::string, std::stri
             warn_(f->spec_.name + " is deprecated: " + *f->spec_.deprecated +
                   (f->spec_.replaced_by.empty() ? "" : "; use " + f->spec_.replaced_by));
         f->assign_(&loaded);
+        if (f->watch_) {
+            detail::FileWatch w;
+            w.name = f->spec_.name;
+            w.paths = watch_fps[w.name].first;
+            w.fingerprint = watch_fps[w.name].second;
+            w.warn = warn_;
+            auto spec = f->spec_;
+            w.reload = [spec, env, values, root](std::vector<Violation>& out,
+                                                 const std::function<void(const void*)>& with) {
+                std::size_t before = out.size();
+                auto again = detail::load_files({spec}, env, values, root, out);
+                if (out.size() != before) return false;
+                with(&again[spec.name]);
+                return true;
+            };
+            f->watch_(&loaded, w);
+        }
     }
 }
 

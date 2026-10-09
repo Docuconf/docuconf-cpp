@@ -194,8 +194,10 @@ target_compile_features(docuconf PUBLIC cxx_std_17)
 target_include_directories(docuconf PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+# docuconf::Watched guards its value with std::shared_mutex.
+find_package(Threads REQUIRED)
 target_link_libraries(docuconf
-  PUBLIC CLI11::CLI11 nlohmann_json::nlohmann_json
+  PUBLIC CLI11::CLI11 nlohmann_json::nlohmann_json Threads::Threads
   PRIVATE re2::re2 ${DOCUCONF_JSV_TARGET} ${DOCUCONF_FILE_DEPS})
 target_compile_definitions(docuconf PRIVATE DOCUCONF_VERSION="${PROJECT_VERSION}")
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

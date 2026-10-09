@@ -313,7 +313,7 @@ int main(int argc, char** argv) {
 `add_file(name, target, description)` declares a file input; the target type picks the file type:
 `TlsKeyPair` (`tls`), `CaBundle` (`caBundle`), `Keystore` (`keystore`), `TextFile` (`text`), `BinaryFile`
 (`binary`), `ConfigFile<T>` (`config`; the format comes from the extension or `.format(...)`). File methods:
-`path` (required), `path_env`, `required`, `secret`, `max_size`, `reload` (only `"restart"`), `group`,
+`path` (required), `path_env`, `required`, `secret`, `max_size`, `reload` (`"restart"`, or `"watch"` with a `Watched` target, below), `group`,
 `deprecated`, `format`, `description`, `details`, `doc`, and per type `dns_names`, `key_algorithms`,
 `min_remaining` (a `std::chrono` duration or Go syntax such as `"720h"`), `require_ca` (tls), `min_certificates` (caBundle), `password_var` (keystore),
 `pattern`, `min_length`, `max_length` (text). `--help` lists file inputs in a `Files` section with their path
@@ -341,8 +341,36 @@ Known gaps:
 - **JKS keystores:** OpenSSL has no JKS parser, so docuconf checks the format and verifies the keystore's
   integrity digest (SHA-1 over the password and contents, as `keytool` writes it) with the password. A wrong
   password or corrupted file is `keystore_unreadable`; the entries themselves are not parsed.
-- **`reload: watch`:** not implemented. docuconf reads file inputs once, at boot, and rejects `watch` at
-  declaration time.
+
+### Reloading files (`reload: watch`)
+
+A plain target is filled once, at boot (`reload: restart`: the platform rolls the pods when the source changes).
+Bind the input to a `docuconf::Watched<T>` instead, with any of the target types above, and it is declared
+`reload: watch` and reread while the app runs:
+
+```cpp
+docuconf::Watched<docuconf::TlsKeyPair> serving_tls;
+config.add_file("serving-tls", serving_tls, "Certificate the service serves HTTPS with")
+    .path("/etc/svc/tls")
+    .required()
+    .dns_names({"svc.internal"});
+// After DOCUCONF_PARSE, on any thread, for example per TLS handshake:
+//     std::shared_ptr<const docuconf::TlsKeyPair> pair = serving_tls.current();
+```
+
+- `current()` returns the current value as a `std::shared_ptr<const T>`, never null; a value it has handed out
+  never changes, so keep the pointer while you use it. It is thread-safe, and readers never wait for a reload.
+- At most once a second (`check_interval(...)` changes that), `current()` stats the input's files, following
+  symlinks: the file, or a TLS directory's `tls.crt`, `tls.key` and `ca.crt`. Kubernetes updates a ConfigMap or
+  Secret volume by swapping its `..data` symlink, so a swap shows up as a different file. `refresh()` checks now
+  and returns whether a new value was loaded; `generation()` counts the values loaded (1 after boot).
+- A changed file goes through every boot check. One that fails (a certificate that no longer covers its names,
+  a config file that does not parse, a required file that disappeared) is not used: the previous value stays,
+  and one warning per bad version goes to `on_warning`, naming the input and the violations and never a secret's
+  content. The next change is checked again. An optional file that disappears becomes absent.
+- `reload("watch")` on a plain target, or `reload("restart")` on a `Watched` one, is a declaration error.
+
+Contract-first mode watches with `contract.watch(env)` (below).
 
 ### Types
 
@@ -476,8 +504,8 @@ any value is read, one line per problem naming the variable: a name that is not 
 description (under 5 characters), a default outside its own constraints, a duration bound or default that is not
 a Go duration, a pattern RE2 cannot compile (lookaround, backreferences), a secret with a default or a flag, a
 name declared twice or a flag that clashes with a CLI11 option, a file mounted over `/etc` or sharing a
-directory, a `pathEnv` that is also a variable, a `passwordVar` that is not a secret, `reload("watch")`, a
-`deprecated` message that is blank or over 500 characters, a required input that is deprecated (the platform
+directory, a `pathEnv` that is also a variable, a `passwordVar` that is not a secret, `reload("watch")` without a
+`Watched` target, a `deprecated` message that is blank or over 500 characters, a required input that is deprecated (the platform
 could not stop setting it), a key set that is not secret or whose `max_keys` is below `min_keys`, and `add_var`
 after the configuration was loaded. A name such as `ENABLE_X` or `FF_X` gets a feature-flag warning
 (SPEC §10).
@@ -537,9 +565,13 @@ The rest of a contract is honoured too, through the same checks as the declarati
 - **Profiles and config-file overlays** (SPEC §4.4, §4.7), layered in this order: the variable's default, the
   selected profile's default, an overlay (read as an optional file at its `path`, under `DOCUCONF_FILE_ROOT`,
   each value at its `configKey`), then the environment. A secret is never read from an overlay, and an overlay
-  that does not parse is `file_malformed` for the overlay. `reload: watch` is rejected, as in the declaration API.
-- **Warnings** go to `contract.on_warning(...)` (standard error by default): a deprecated input that is set, and a
-  variable set both in the environment and in an overlay. They name the input and the message, never the value.
+  that does not parse is `file_malformed` for the overlay.
+- **`reload: watch`**, for file inputs and overlays: `contract.watch(env)` loads like `load(env)` and returns a
+  `docuconf::Watched<docuconf::Values>`. Its `current()` reloads the contract when a watched input's files
+  change, as above: the environment and the inputs declared `restart` keep their boot values, and a reload that
+  fails its checks keeps the previous `Values` and warns. `load(env)` reads every input once.
+- **Warnings** go to `contract.on_warning(...)` (standard error by default): a deprecated input that is set, a
+  variable set both in the environment and in an overlay, and a watched change that failed its checks. They name the input and the message, never the value.
 
 The environment-only build (`DOCUCONF_FILE_INPUTS=OFF`) rejects a contract with file inputs or overlays.
 
@@ -565,9 +597,8 @@ files, so it skips the `files` and `overlays` cases. Failures are reported by ca
 
 The shared export fixture (`conformance/export/fixture.yaml`) is declared in
 [`tests/export_fixture_test.cpp`](tests/export_fixture_test.cpp), exported, and compared with
-`conformance/export/golden.cue` by `docuconf conformance export` (the CLI from `DOCUCONF_CLI` or `PATH`). One
-difference is expected and asserted: the fixture's `settings` and `serving-tls` declare `reload: watch`, which
-docuconf rejects because it reads file inputs once, at boot (SPEC §11.2 item 8), so they export `restart`. The
+`conformance/export/golden.cue` by `docuconf conformance export` (the CLI from `DOCUCONF_CLI` or `PATH`), and
+must match it exactly; its `settings` and `serving-tls` are `Watched` targets, so they export `reload: watch`. The
 gateway golden contract in `tests/golden/gateway.cue` stays as well.
 
 ### Development

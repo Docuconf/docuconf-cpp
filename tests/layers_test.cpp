@@ -100,11 +100,4 @@ TEST(Layers, ADeprecatedFileThatIsPresentWarns) {
     EXPECT_EQ(l.warnings[0], "licence is deprecated: Licences are no longer checked");
 }
 
-TEST(Layers, WatchIsRejected) {
-    std::string c = kContract;
-    const std::string sep = "\"keySeparator\": \".\"";
-    c.replace(c.find(sep), sep.size(), sep + ", \"reload\": \"watch\"");
-    EXPECT_THROW(docuconf::Contract::from_json(c), docuconf::DeclarationError);
-}
-
 }  // namespace

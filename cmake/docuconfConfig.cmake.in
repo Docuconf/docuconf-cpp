@@ -1,6 +1,7 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
+find_dependency(Threads)
 if(NOT TARGET CLI11::CLI11)
   find_dependency(CLI11 CONFIG)
 endif()

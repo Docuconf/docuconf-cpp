@@ -43,6 +43,7 @@
 #include "files.hpp"
 #include "keyset.hpp"
 #include "spec.hpp"
+#include "watched.hpp"
 
 /// 1 when the library was built with file inputs (DOCUCONF_FILE_INPUTS=ON in
 /// CMake, the default); 0 for the environment-only build.
@@ -196,6 +197,77 @@ void schema_property(nlohmann::json& schema, const char* name) {
     schema["properties"][name] = schema_of<M>();
     if constexpr (!optional_of<M>::value) schema["required"].push_back(name);
 }
+
+// A loaded file input (an internal detail::LoadedFile), passed as void*.
+bool loaded_present(const void* loaded);
+const std::string& loaded_path(const void* loaded);
+const nlohmann::json& loaded_document(const void* loaded);
+
+/// The file type of each add_file target and how a loaded file fills it.
+template <class T>
+struct file_target {};
+template <>
+struct file_target<TlsKeyPair> {
+    static constexpr FileType type = FileType::Tls;
+    static void declare(FileSpec&) {}
+    static void assign(TlsKeyPair& target, const void* loaded);
+};
+template <>
+struct file_target<CaBundle> {
+    static constexpr FileType type = FileType::CaBundle;
+    static void declare(FileSpec&) {}
+    static void assign(CaBundle& target, const void* loaded);
+};
+template <>
+struct file_target<Keystore> {
+    static constexpr FileType type = FileType::Keystore;
+    static void declare(FileSpec&) {}
+    static void assign(Keystore& target, const void* loaded);
+};
+template <>
+struct file_target<TextFile> {
+    static constexpr FileType type = FileType::Text;
+    static void declare(FileSpec&) {}
+    static void assign(TextFile& target, const void* loaded);
+};
+template <>
+struct file_target<BinaryFile> {
+    static constexpr FileType type = FileType::Binary;
+    static void declare(FileSpec&) {}
+    static void assign(BinaryFile& target, const void* loaded);
+};
+template <class T>
+struct file_target<ConfigFile<T>> {
+    static constexpr FileType type = FileType::Config;
+    static void declare(FileSpec& spec) {
+        static_assert(has_schema<T>::value, "docuconf: a config file type needs a json_schema()");
+        spec.schema = json_schema<T>::get();
+        spec.bind = bind_check<T>();
+    }
+    static void assign(ConfigFile<T>& target, const void* loaded) {
+        target = ConfigFile<T>{};
+        target.present = loaded_present(loaded);
+        if (!target.present) return;
+        target.path = loaded_path(loaded);
+        target.value = loaded_document(loaded).template get<T>();
+    }
+};
+
+template <class T, class = void>
+struct is_file_target : std::false_type {};
+template <class T>
+struct is_file_target<T, std::void_t<decltype(file_target<T>::type)>> : std::true_type {};
+
+/// What rereading one watched file input needs; filled in at load.
+struct FileWatch {
+    std::string name;
+    std::vector<std::string> paths;  // what to stat, after DOCUCONF_FILE_ROOT and pathEnv
+    std::string fingerprint;         // stat_fingerprint(paths) before the boot read
+    // Reads and checks the input again; on success calls `with` with the
+    // loaded file. Returns false, with the violations, otherwise.
+    std::function<bool(std::vector<Violation>&, const std::function<void(const void*)>& with)> reload;
+    std::function<void(const std::string&)> warn;
+};
 
 }  // namespace detail
 
@@ -694,7 +766,9 @@ public:
         spec_.max_size = bytes;
         return *this;
     }
-    /// Only "restart" is supported: docuconf reads files once, at boot.
+    /// "restart" (the default for a plain target): the file is read once,
+    /// at boot. "watch" (implied by a docuconf::Watched target, which it
+    /// needs): the app rereads the file when it changes.
     File& reload(std::string r) {
         spec_.reload = std::move(r);
         return *this;
@@ -784,6 +858,8 @@ private:
     FileSpec spec_;
     std::vector<std::string> problems_;
     std::function<void(const void*)> assign_;  // takes a detail::LoadedFile
+    // Set for a Watched target: binds it from the boot value and a FileWatch.
+    std::function<void(const void*, const detail::FileWatch&)> watch_;
 
     template <class F>
     File& only(FileType t, const char* field, F&& set) {
@@ -848,11 +924,43 @@ public:
     /// nlohmann's from_json.
     template <class T>
     File& add_file(std::string name, ConfigFile<T>& target, std::string description = "") {
-        static_assert(detail::has_schema<T>::value, "docuconf: a config file type needs a json_schema()");
         File& f = new_file(std::move(name), FileType::Config, std::move(description));
-        f.spec_.schema = json_schema<T>::get();
-        f.spec_.bind = detail::bind_check<T>();
-        f.assign_ = [&target](const void* p) { bind_config(target, p); };
+        detail::file_target<ConfigFile<T>>::declare(f.spec_);
+        f.assign_ = [&target](const void* p) { detail::file_target<ConfigFile<T>>::assign(target, p); };
+        return f;
+    }
+
+    /// A file input declared `reload: watch` (SPEC §4.6.2): `target` holds
+    /// its current value and rereads the file when it changes, through the
+    /// same checks as at boot (see docuconf::Watched). T is any add_file
+    /// target type: TlsKeyPair, CaBundle, Keystore, TextFile, BinaryFile or
+    /// ConfigFile<U>.
+    template <class T>
+    File& add_file(std::string name, Watched<T>& target, std::string description = "") {
+        static_assert(detail::is_file_target<T>::value,
+                      "docuconf: Watched<T> needs a file target type: TlsKeyPair, CaBundle, Keystore, TextFile, "
+                      "BinaryFile or ConfigFile<U>");
+        using Target = detail::file_target<T>;
+        File& f = new_file(std::move(name), Target::type, std::move(description));
+        Target::declare(f.spec_);
+        f.spec_.reload = "watch";
+        f.assign_ = [](const void*) {};
+        f.watch_ = [&target](const void* boot, const detail::FileWatch& w) {
+            auto first = std::make_shared<T>();
+            Target::assign(*first, boot);
+            auto reload = w.reload;
+            auto loader = [reload](std::vector<Violation>& violations) -> std::shared_ptr<const T> {
+                std::shared_ptr<T> out;
+                if (!reload(violations, [&out](const void* loaded) {
+                        out = std::make_shared<T>();
+                        Target::assign(*out, loaded);
+                    }))
+                    return nullptr;
+                return out;
+            };
+            target = Watched<T>(std::make_shared<detail::WatchCore<T>>(w.name, w.paths, w.fingerprint,
+                                                                       std::move(first), loader, w.warn));
+        };
         return f;
     }
 #else
@@ -904,7 +1012,9 @@ public:
     std::string help_footer() const;
 
     /// Where warnings go (deprecated variables set, feature-flag names,
-    /// likely typos in the environment). Default: standard error.
+    /// likely typos in the environment, a watched file whose change failed
+    /// its checks). Default: standard error. Set it before parse(): watched
+    /// files keep the sink in effect when the configuration was loaded.
     void on_warning(std::function<void(const std::string&)> sink);
 
     /// The option that triggers export, `--docuconf-export`.
@@ -926,21 +1036,7 @@ private:
     void before_declare(const std::string& name);
     void load_env(const Env& env, const std::map<std::string, std::string>& sources, bool process);
     File& new_file(std::string name, FileType type, std::string description);
-
-    template <class T>
-    static void bind_config(ConfigFile<T>& target, const void* p);
-    static bool loaded_present(const void* p);
-    static const std::string& loaded_path(const void* p);
-    static const nlohmann::json& loaded_document(const void* p);
 };
-
-template <class T>
-void Declaration::bind_config(ConfigFile<T>& target, const void* p) {
-    target.present = loaded_present(p);
-    if (!target.present) return;
-    target.path = loaded_path(p);
-    target.value = loaded_document(p).template get<T>();
-}
 
 }  // namespace docuconf
 

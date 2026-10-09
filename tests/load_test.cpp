@@ -400,7 +400,7 @@ TEST(Declaration, RejectsBadFileInputs) {
         FAIL() << "expected a DeclarationError";
     } catch (const docuconf::DeclarationError& err) {
         std::string what = err.what();
-        EXPECT_NE(what.find("one: reload \"watch\" is not supported"), std::string::npos) << what;
+        EXPECT_NE(what.find("one: reload \"watch\" needs a docuconf::Watched target"), std::string::npos) << what;
         EXPECT_NE(what.find("two: dnsNames does not apply to a text file"), std::string::npos) << what;
         EXPECT_NE(what.find("two: shares its mount directory /etc/svc with one"), std::string::npos) << what;
         EXPECT_NE(what.find("ca: would be mounted at /etc/ssl/certs"), std::string::npos) << what;
