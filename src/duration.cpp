@@ -2,12 +2,12 @@
 
 #include <cstdint>
 #include <limits>
-#include <numeric>
 
 namespace docuconf {
 namespace {
 
 using u64 = std::uint64_t;
+__extension__ typedef unsigned __int128 u128;  // GCC and Clang
 constexpr u64 kSec = 1000000000ULL;
 constexpr u64 kMax = static_cast<u64>(std::numeric_limits<std::int64_t>::max());
 
@@ -21,9 +21,9 @@ bool digits(const std::string& s, std::size_t& i, std::string& out) {
     return !out.empty();
 }
 
-// whole units plus a decimal fraction of a unit, in nanoseconds; nullopt on
-// overflow or on a fraction finer than a nanosecond.
-std::optional<u64> nanos(const std::string& whole, const std::string& frac, u64 unit, bool exact) {
+// whole units plus a decimal fraction of a unit, in nanoseconds, the
+// fraction truncated to whole nanoseconds; nullopt on overflow.
+std::optional<u64> nanos(const std::string& whole, const std::string& frac, u64 unit) {
     u64 n = 0;
     for (char c : whole) {
         u64 d = static_cast<u64>(c - '0');
@@ -33,30 +33,16 @@ std::optional<u64> nanos(const std::string& whole, const std::string& frac, u64 
     if (unit != 0 && n > kMax / unit) return std::nullopt;
     n *= unit;
     if (!frac.empty()) {
-        // fraction * unit / 10^len, exactly when exact is set
-        u64 scale = 1;
-        u64 part = 0;
+        // fraction * unit / 10^len, exactly: unit is at most a day in
+        // nanoseconds, and only the first 19 digits can matter.
+        u128 part = 0, scale = 1;
+        std::size_t used = 0;
         for (char c : frac) {
-            if (scale > kMax / 10) {
-                if (exact && c != '0') return std::nullopt;
-                continue;  // Go drops digits beyond its precision
-            }
+            if (used++ == 19) break;
+            part = part * 10 + static_cast<unsigned>(c - '0');
             scale *= 10;
-            part = part * 10 + static_cast<u64>(c - '0');
         }
-        // part * unit / scale without overflow: unit is at most 3600e9.
-        long double v = static_cast<long double>(part) * static_cast<long double>(unit) /
-                        static_cast<long double>(scale);
-        u64 add = static_cast<u64>(v);
-        if (exact) {
-            // part * unit / scale, in whole nanoseconds only.
-            u64 g = std::gcd(unit, scale);
-            u64 u = unit / g, sc = scale / g;
-            if (part % sc != 0) return std::nullopt;
-            u64 q = part / sc;
-            if (u != 0 && q > kMax / u) return std::nullopt;
-            add = q * u;
-        }
+        u64 add = static_cast<u64>(part * unit / scale);
         if (n > kMax - add) return std::nullopt;
         n += add;
     }
@@ -68,8 +54,20 @@ std::optional<Duration> from_nanos(std::optional<u64> n) {
     return Duration(static_cast<std::int64_t>(*n));
 }
 
+// One ISO 8601 number: digits with an optional fraction after . or ,.
+bool iso_number(const std::string& s, std::size_t& i, std::string& whole, std::string& frac) {
+    frac.clear();
+    if (!digits(s, i, whole)) return false;
+    if (i < s.size() && (s[i] == '.' || s[i] == ',')) {
+        ++i;
+        if (!digits(s, i, frac)) return false;
+    }
+    return true;
+}
+
 std::optional<Duration> parse_iso8601(const std::string& s) {
-    // P[nD][T[nH][nM][n[.f]S]]
+    // P[nD][T[nH][nM][nS]], with at least one component and at least one
+    // after a T. Upper case only, no sign.
     if (s.size() < 2 || s[0] != 'P') return std::nullopt;
     std::size_t i = 1;
     u64 total = 0;
@@ -80,11 +78,11 @@ std::optional<Duration> parse_iso8601(const std::string& s) {
         any = true;
         return true;
     };
-    std::string num;
-    if (i < s.size() && is_digit(s[i])) {
-        if (!digits(s, i, num) || i >= s.size() || s[i] != 'D') return std::nullopt;
+    std::string whole, frac;
+    if (i < s.size() && s[i] != 'T') {
+        if (!iso_number(s, i, whole, frac) || i >= s.size() || s[i] != 'D') return std::nullopt;
         ++i;
-        if (!add(nanos(num, "", 86400 * kSec, true))) return std::nullopt;
+        if (!add(nanos(whole, frac, 86400 * kSec))) return std::nullopt;
     }
     if (i < s.size()) {
         if (s[i] != 'T') return std::nullopt;
@@ -92,26 +90,14 @@ std::optional<Duration> parse_iso8601(const std::string& s) {
         if (i >= s.size()) return std::nullopt;  // a T with nothing after it
         int stage = 0;                           // H, M, S in order
         while (i < s.size()) {
-            std::string frac;
-            if (!digits(s, i, num)) return std::nullopt;
-            if (i < s.size() && (s[i] == '.' || s[i] == ',')) {
-                ++i;
-                if (!digits(s, i, frac)) return std::nullopt;
-            }
-            if (i >= s.size()) return std::nullopt;
+            if (!iso_number(s, i, whole, frac) || i >= s.size()) return std::nullopt;
             char u = s[i++];
-            if (u == 'H' && stage < 1 && frac.empty()) {
-                stage = 1;
-                if (!add(nanos(num, "", 3600 * kSec, true))) return std::nullopt;
-            } else if (u == 'M' && stage < 2 && frac.empty()) {
-                stage = 2;
-                if (!add(nanos(num, "", 60 * kSec, true))) return std::nullopt;
-            } else if (u == 'S' && stage < 3) {
-                stage = 3;
-                if (!add(nanos(num, frac, kSec, true))) return std::nullopt;
-            } else {
-                return std::nullopt;
-            }
+            u64 unit = 0;
+            if (u == 'H' && stage < 1) stage = 1, unit = 3600 * kSec;
+            else if (u == 'M' && stage < 2) stage = 2, unit = 60 * kSec;
+            else if (u == 'S' && stage < 3) stage = 3, unit = kSec;
+            else return std::nullopt;
+            if (!add(nanos(whole, frac, unit))) return std::nullopt;
         }
     }
     if (!any) return std::nullopt;
@@ -127,7 +113,7 @@ std::optional<Duration> parse_seconds(const std::string& s) {
         ++i;
         if (!digits(s, i, frac) || i != s.size()) return std::nullopt;
     }
-    return from_nanos(nanos(whole, frac, kSec, true));
+    return from_nanos(nanos(whole, frac, kSec));
 }
 
 std::optional<Duration> parse_timespan(const std::string& s) {
@@ -155,8 +141,8 @@ std::optional<Duration> parse_timespan(const std::string& s) {
     }
     if (std::stoi(h) > 23 || std::stoi(m) > 59 || std::stoi(sec) > 59) return std::nullopt;
     u64 total = 0;
-    for (auto part : {nanos(days, "", 86400 * kSec, true), nanos(h, "", 3600 * kSec, true),
-                      nanos(m, "", 60 * kSec, true), nanos(sec, frac, kSec, true)}) {
+    for (auto part : {nanos(days, "", 86400 * kSec), nanos(h, "", 3600 * kSec), nanos(m, "", 60 * kSec),
+                      nanos(sec, frac, kSec)}) {
         if (!part || total > kMax - *part) return std::nullopt;
         total += *part;
     }
@@ -166,12 +152,16 @@ std::optional<Duration> parse_timespan(const std::string& s) {
 }  // namespace
 
 std::optional<Duration> parse_go_duration(const std::string& s) {
-    // Go: [-+]? ([0-9]*(\.[0-9]*)?[a-z]+)+, or "0".
-    if (s.empty()) return std::nullopt;
-    if (s == "0") return Duration(0);
+    // Go's time.ParseDuration: [-+]?(0|([0-9]*(\.[0-9]*)?unit)+), where a
+    // number has at least one digit and a unit is ns, us, µs, μs, ms, s, m
+    // or h, in lower case.
     std::size_t i = 0;
-    if (s[0] == '+') ++i;
-    if (i < s.size() && s[i] == '-') return std::nullopt;  // negative durations are not allowed
+    bool negative = false;
+    if (!s.empty() && (s[0] == '-' || s[0] == '+')) {
+        negative = s[0] == '-';
+        ++i;
+    }
+    if (s.compare(i, std::string::npos, "0") == 0) return Duration(0);
     if (i >= s.size()) return std::nullopt;
     u64 total = 0;
     while (i < s.size()) {
@@ -194,11 +184,13 @@ std::optional<Duration> parse_go_duration(const std::string& s) {
         else if (unit == "m") mult = 60 * kSec;
         else if (unit == "h") mult = 3600 * kSec;
         else return std::nullopt;
-        auto n = nanos(whole, frac, mult, false);
+        auto n = nanos(whole, frac, mult);
         if (!n || total > kMax - *n) return std::nullopt;
         total += *n;
     }
-    return from_nanos(total);
+    auto d = from_nanos(total);
+    if (d && negative) return -*d;
+    return d;
 }
 
 std::optional<Duration> parse_duration(DurationEncoding encoding, const std::string& s) {

@@ -18,8 +18,11 @@ if(DOCUCONF_FILE_INPUTS)
     devx_test.cpp
     doc_test.cpp
     duration_test.cpp
+    export_fixture_test.cpp
     export_test.cpp
     files_test.cpp
+    keyset_test.cpp
+    layers_test.cpp
     load_test.cpp)
   target_link_libraries(docuconf_tests PRIVATE docuconf::docuconf GTest::gtest_main OpenSSL::Crypto)
 else()
@@ -28,7 +31,8 @@ else()
     conformance_test.cpp
     devx_test.cpp
     doc_test.cpp
-    duration_test.cpp)
+    duration_test.cpp
+    keyset_test.cpp)
   target_link_libraries(docuconf_tests PRIVATE docuconf::docuconf GTest::gtest_main)
 endif()
 target_compile_definitions(docuconf_tests PRIVATE

@@ -8,8 +8,8 @@
 
 namespace docuconf {
 
-/// Parses a Go duration such as `1m30s`, `1h2m3s4ms`, `250ms` or `1.5h`,
-/// as Go's time.ParseDuration does (negative durations are rejected).
+/// Parses a Go duration such as `1m30s`, `1h2m3s4ms`, `250ms`, `1.5h` or
+/// `-5s`, exactly as Go's time.ParseDuration does (SPEC §5).
 std::optional<Duration> parse_go_duration(const std::string& s);
 
 /// Parses a duration in one of the wire encodings: `go` (`1m30s`),

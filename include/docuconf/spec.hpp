@@ -21,7 +21,7 @@ namespace docuconf {
 /// Durations are held in nanoseconds, as Go and the contract do.
 using Duration = std::chrono::nanoseconds;
 
-enum class VarType { String, Int, Float, Bool, Duration, Url, Enum, List, Json };
+enum class VarType { String, Int, Float, Bool, Duration, Url, Enum, List, Json, KeySet };
 enum class ItemType { String, Int };
 enum class ListEncoding { Csv, Json, Indexed };
 enum class DurationEncoding { Go, Iso8601, Seconds, Timespan };
@@ -110,7 +110,7 @@ struct VarSpec {
     std::vector<std::string> schemes;
     // enum
     std::vector<std::string> values;
-    // list
+    // list; a keySet uses the list encodings and separator too
     ItemType items = ItemType::String;
     ListEncoding list_encoding = ListEncoding::Csv;
     std::string separator = ",";
@@ -121,6 +121,12 @@ struct VarSpec {
     // Bounds on the length of each item of a string list, in characters.
     std::optional<std::uint64_t> item_min_length;
     std::optional<std::uint64_t> item_max_length;
+    // keySet: always secret. minKeys defaults to 1 and maxKeys to 2; key
+    // lengths count characters, and an empty key is always out of range.
+    std::uint64_t min_keys = 1;
+    std::uint64_t max_keys = 2;
+    std::optional<std::uint64_t> key_min_length;
+    std::optional<std::uint64_t> key_max_length;
     // duration
     DurationEncoding duration_encoding = DurationEncoding::Go;
     // json
@@ -186,6 +192,16 @@ struct Profiles {
     std::string selector;
     std::string default_profile;
     std::map<std::string, std::map<std::string, Value>> defaults;
+};
+
+/// A config-file overlay (SPEC §4.7): an optional file the platform mounts
+/// between the profile file and the environment.
+struct Overlay {
+    std::string name;
+    std::string format;  // "json", "yaml" or "toml"
+    std::string path;
+    std::string key_separator;  // ":" or "."
+    std::string reload = "restart";
 };
 
 }  // namespace docuconf

@@ -82,9 +82,12 @@ std::vector<Problem> check_tls(const FileSpec& spec, const std::string& crt, con
                                const std::string* ca) {
     std::vector<Problem> out;
     std::vector<Ptr<X509>> certs;
-    if (!parse_certs(crt, certs) || certs.empty()) {
-        out.emplace_back(Code::CertificateInvalid,
-                         certs.empty() ? "tls.crt holds no PEM certificate" : "tls.crt holds a certificate that does not parse");
+    // SPEC §11.2 item 5: no PEM certificate at all is file_malformed; a PEM
+    // certificate that does not parse is certificate_invalid.
+    bool parsed = parse_certs(crt, certs);
+    if (!parsed || certs.empty()) {
+        if (parsed) out.emplace_back(Code::FileMalformed, "tls.crt holds no PEM certificate");
+        else out.emplace_back(Code::CertificateInvalid, "tls.crt holds a certificate that does not parse");
         return out;
     }
     X509* leaf = certs[0].get();
@@ -135,8 +138,10 @@ std::vector<Problem> check_tls(const FileSpec& spec, const std::string& crt, con
 
     if (ca) {
         std::vector<Ptr<X509>> roots;
-        if (!parse_certs(*ca, roots) || roots.empty()) {
-            out.emplace_back(Code::CertificateInvalid, "ca.crt holds no parseable PEM certificate");
+        bool ca_parsed = parse_certs(*ca, roots);
+        if (!ca_parsed || roots.empty()) {
+            if (ca_parsed) out.emplace_back(Code::FileMalformed, "ca.crt holds no PEM certificate");
+            else out.emplace_back(Code::CertificateInvalid, "ca.crt holds a certificate that does not parse");
             return out;
         }
         Ptr<X509_STORE> store(X509_STORE_new());
@@ -164,7 +169,7 @@ std::vector<Problem> check_ca_bundle(const FileSpec& spec, const std::string& pe
     std::vector<Ptr<X509>> certs;
     std::vector<Problem> out;
     if (!parse_certs(pem, certs)) {
-        out.emplace_back(Code::FileMalformed, "holds a PEM certificate that does not parse");
+        out.emplace_back(Code::CertificateInvalid, "holds a PEM certificate that does not parse");
         return out;
     }
     count = certs.size();

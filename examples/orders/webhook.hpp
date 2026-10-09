@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
-#include <vector>
+#include <string_view>
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -15,28 +15,19 @@
 
 namespace orders {
 
-/// Declares WEBHOOK_KEYS, bound to `keys`: a secret csv list of one or two
-/// keys, each 32 to 256 characters. Unset, `keys` stays empty.
-inline void declare_webhook_keys(docuconf::Declaration& config, std::optional<std::vector<std::string>>& keys) {
+/// Declares WEBHOOK_KEYS, bound to `keys`: a key set (always secret) of
+/// one or two keys, each 32 to 256 characters. Unset, `keys` stays empty.
+inline void declare_webhook_keys(docuconf::Declaration& config, std::optional<docuconf::KeySet>& keys) {
     config.add_var("WEBHOOK_KEYS", keys)
         .doc(R"(
             /// Keys that verify the signature on incoming payment webhooks.
             ///
-            /// A webhook is accepted when it is signed with any key in the list, so
-            /// the key can be rotated without turning webhooks away. To rotate:
-            ///
-            ///  1. add the new key as the second item, and roll out;
-            ///  2. switch the sender to the new key;
-            ///  3. remove the old key, and roll out.
-            ///
-            /// Each key is 32 to 256 characters, so an empty or truncated key fails
-            /// at boot. Without this variable, the service rejects every webhook.
+            /// A webhook is accepted when it is signed with any key in the set, so the
+            /// key can be rotated without turning webhooks away. Each key is 32 to 256
+            /// characters, so an empty or truncated key fails at boot. Without this
+            /// variable, the service rejects every webhook.
         )")
-        .secret()
-        .min_items(1)
-        .max_items(2)
-        .item_min_length(32)
-        .item_max_length(256);
+        .key_length(32, 256);
 }
 
 /// The HMAC-SHA256 of `body` under `key`, as raw bytes.
@@ -69,17 +60,16 @@ inline std::optional<std::string> from_hex(const std::string& hex) {
 /// Whether `signature`, the hex-encoded HMAC-SHA256 of `body`, was made
 /// with any of `keys`. Accepting every key in the set is what lets a key be
 /// rotated: during the overlap the old and the new key both work.
-inline bool verify(const std::vector<std::string>& keys, const std::string& body, const std::string& signature) {
+inline bool verify(const docuconf::KeySet& keys, const std::string& body, const std::string& signature) {
     auto got = from_hex(signature);
     if (!got) return false;
-    bool ok = false;
-    for (const auto& key : keys) {
-        std::string want = hmac_sha256(key, body);
-        // Constant time, and every key is checked, so the time taken does
-        // not say which one matched.
-        ok |= got->size() == want.size() && CRYPTO_memcmp(got->data(), want.data(), want.size()) == 0;
-    }
-    return ok;
+    // KeySet::verify tries every key, even after one matches, and the
+    // comparison is constant time, so the time taken does not say which
+    // key matched.
+    return keys.verify([&](std::string_view key) {
+        std::string want = hmac_sha256(std::string(key), body);
+        return got->size() == want.size() && CRYPTO_memcmp(got->data(), want.data(), want.size()) == 0;
+    });
 }
 
 }  // namespace orders

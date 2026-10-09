@@ -61,9 +61,9 @@ int main(int argc, char** argv) {
         .range(1, 64)
         .default_val(4);
 
-    // A key set: a secret list of one or two keys, so a key can be rotated
-    // without turning webhooks away (see webhook.hpp).
-    std::optional<std::vector<std::string>> webhook_keys;
+    // A key set: one or two secret keys, so a key can be rotated without
+    // turning webhooks away (see webhook.hpp).
+    std::optional<docuconf::KeySet> webhook_keys;
     orders::declare_webhook_keys(config, webhook_keys);
 
     // Parses, validates every input and binds the values, or exits:
@@ -93,8 +93,7 @@ int main(int argc, char** argv) {
     // Payment webhooks, signed with any key in WEBHOOK_KEYS.
     server.set_payload_max_length(1 << 20);
     server.Post("/webhooks/payments", [&](const httplib::Request& req, httplib::Response& res) {
-        if (!orders::verify(webhook_keys.value_or(std::vector<std::string>{}), req.body,
-                            req.get_header_value("X-Signature"))) {
+        if (!orders::verify(webhook_keys.value_or(docuconf::KeySet{}), req.body, req.get_header_value("X-Signature"))) {
             res.status = 401;
             res.set_content("bad signature", "text/plain");
             return;

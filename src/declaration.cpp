@@ -393,7 +393,13 @@ void Declaration::load_env(const Env& env, const std::map<std::string, std::stri
         auto it = values.find(v->spec_.name);
         v->assign(it == values.end() ? std::nullopt : it->second);
     }
-    for (auto& f : files_) f->assign_(&files[f->spec_.name]);
+    for (auto& f : files_) {
+        const auto& loaded = files[f->spec_.name];
+        if (f->spec_.deprecated && loaded.present)
+            warn_(f->spec_.name + " is deprecated: " + *f->spec_.deprecated +
+                  (f->spec_.replaced_by.empty() ? "" : "; use " + f->spec_.replaced_by));
+        f->assign_(&loaded);
+    }
 }
 
 void Declaration::parse(int argc, const char* const* argv) {

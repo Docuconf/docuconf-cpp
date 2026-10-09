@@ -6,6 +6,7 @@
 #define DOCUCONF_FILE_INPUTS 1
 #endif
 
+#include <cstddef>
 #include <map>
 #include <optional>
 #include <set>
@@ -71,14 +72,53 @@ std::vector<std::string> validate_var(VarSpec& spec);
 /// pathEnv, passwordVar). Compiles text patterns.
 std::vector<std::string> validate_files(std::vector<FileSpec>& files, const std::vector<VarSpec>& vars);
 
-/// Loads every variable: reads and parses the environment, applies the
-/// selected profile's defaults and then the declared defaults, and checks
-/// constraints. Returns the values (nullopt for an unset optional) and
-/// appends violations in variable order.
+/// The longest `deprecated` message, in characters (SPEC §4.2).
+inline constexpr std::size_t kMaxDeprecated = 500;
+/// Checks a `deprecated` message: not blank, at most kMaxDeprecated
+/// characters. Returns the problem, or an empty string.
+std::string check_deprecated(const std::string& message);
+
+/// A variable's value from a config-file overlay (SPEC §4.7), converted to
+/// the wire strings it stands for and checked like an environment value.
+struct Layer {
+    std::string source;             // "overlay <name>"
+    std::vector<std::string> raws;  // one wire string, or the items of a list
+    bool items = false;             // raws are list items
+    bool bad = false;               // the value was already reported
+};
+
+/// The profile in effect (SPEC §4.4): the selector's value when the
+/// environment sets it, or profiles.default.
+std::string selected_profile(const std::vector<VarSpec>& vars, const Profiles& profiles, const Env& env);
+
+/// Loads every variable: reads and parses the environment, then the
+/// overlays' values, the selected profile's defaults and the declared
+/// defaults, in that order of precedence, and checks constraints. Returns
+/// the values (nullopt for an unset optional) and appends violations in
+/// variable order. Warnings (a deprecated variable that is set, a variable
+/// set both in the environment and an overlay) never hold a value.
 std::map<std::string, std::optional<Value>> load_vars(const std::vector<VarSpec>& vars, const Env& env,
                                                       const Profiles* profiles,
                                                       std::vector<Violation>& violations,
-                                                      std::vector<std::string>* warnings);
+                                                      std::vector<std::string>* warnings,
+                                                      const std::map<std::string, Layer>* overlays = nullptr);
+
+/// Parses a structured file (`json`, `yaml` or `toml`) into JSON. Throws
+/// std::exception with the parser's message when it does not parse. Only
+/// json is available in the environment-only build.
+nlohmann::json parse_structured(const std::string& format, const std::string& text);
+
+/// Reads each overlay (SPEC §4.7) from under `file_root` and returns the
+/// value it holds for each variable with a configKey, converted to wire
+/// strings. A missing overlay is skipped; one that does not parse, or is
+/// not an object, is file_malformed for the overlay. A bad value is
+/// invalid_type for the variable. A secret is never taken from an overlay.
+std::map<std::string, Layer> load_overlays(const std::vector<Overlay>& overlays, const std::vector<VarSpec>& vars,
+                                           const std::string& selector, const std::string& file_root,
+                                           std::vector<Violation>& violations, std::vector<std::string>& warnings);
+
+/// `path` under DOCUCONF_FILE_ROOT, when one is set and the path is absolute.
+std::string under_root(const std::string& file_root, const std::string& path);
 
 /// The loaded content of one file input, for binding.
 struct LoadedFile {

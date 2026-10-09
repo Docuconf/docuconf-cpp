@@ -41,6 +41,7 @@
 #include "duration.hpp"
 #include "errors.hpp"
 #include "files.hpp"
+#include "keyset.hpp"
 #include "spec.hpp"
 
 /// 1 when the library was built with file inputs (DOCUCONF_FILE_INPUTS=ON in
@@ -139,6 +140,7 @@ constexpr VarType var_type() {
     else if constexpr (is_int_v<U>) return VarType::Int;
     else if constexpr (std::is_floating_point_v<U>) return VarType::Float;
     else if constexpr (std::is_same_v<U, std::string>) return VarType::String;
+    else if constexpr (std::is_same_v<U, KeySet>) return VarType::KeySet;
     else if constexpr (is_duration<U>::value) return VarType::Duration;
     else if constexpr (std::is_enum_v<U>) return VarType::Enum;
     else if constexpr (vector_of<U>::value) return VarType::List;
@@ -239,7 +241,11 @@ public:
     using Target = typename detail::optional_of<T>::type;
     static constexpr VarType kType = detail::var_type<Target>();
 
-    explicit Var(T& target) : target_(target) { spec_.type = kType; }
+    explicit Var(T& target) : target_(target) {
+        spec_.type = kType;
+        // A key set is always secret (SPEC §4.3).
+        if constexpr (kType == VarType::KeySet) spec_.secret = true;
+    }
 
     // ---- every type ----
 
@@ -304,7 +310,7 @@ public:
     Var& flag(std::string names = "") {
         FlagKind kind = FlagKind::Scalar;
         if constexpr (std::is_same_v<Target, bool>) kind = FlagKind::Bool;
-        else if constexpr (detail::vector_of<Target>::value) kind = FlagKind::List;
+        else if constexpr (detail::vector_of<Target>::value || kType == VarType::KeySet) kind = FlagKind::List;
         make_flag(std::move(names), kind);
         return *this;
     }
@@ -312,6 +318,7 @@ public:
     /// The default, used when the variable is unset (or empty, for any type
     /// but string).
     Var& default_val(const Target& v) {
+        static_assert(kType != VarType::KeySet, "docuconf: a key set is secret, so it has no default");
         if constexpr (std::is_enum_v<Target>) {
             enum_default_ = v;
         } else {
@@ -467,9 +474,47 @@ public:
     /// The csv separator, `,` by default.
     template <class U = Target>
     Var& delimiter(std::string sep) {
-        static_assert(detail::vector_of<U>::value, "docuconf: delimiter() applies to a std::vector variable");
+        static_assert(detail::vector_of<U>::value || std::is_same_v<U, KeySet>,
+                      "docuconf: delimiter() applies to a std::vector or a docuconf::KeySet variable");
         spec_.separator = std::move(sep);
         return *this;
+    }
+
+    // ---- keySet ----
+
+    /// The fewest keys (default 1, at least 1).
+    template <class U = Target>
+    Var& min_keys(std::uint64_t n) {
+        static_assert(std::is_same_v<U, KeySet>, "docuconf: min_keys() applies to a docuconf::KeySet variable");
+        spec_.min_keys = n;
+        return *this;
+    }
+    /// The most keys (default 2, at least min_keys): two during a rotation.
+    template <class U = Target>
+    Var& max_keys(std::uint64_t n) {
+        static_assert(std::is_same_v<U, KeySet>, "docuconf: max_keys() applies to a docuconf::KeySet variable");
+        spec_.max_keys = n;
+        return *this;
+    }
+    /// The shortest key, in characters (Unicode code points).
+    template <class U = Target>
+    Var& key_min_length(std::uint64_t n) {
+        static_assert(std::is_same_v<U, KeySet>, "docuconf: key_min_length() applies to a docuconf::KeySet variable");
+        spec_.key_min_length = n;
+        return *this;
+    }
+    /// The longest key, in characters (Unicode code points).
+    template <class U = Target>
+    Var& key_max_length(std::uint64_t n) {
+        static_assert(std::is_same_v<U, KeySet>, "docuconf: key_max_length() applies to a docuconf::KeySet variable");
+        spec_.key_max_length = n;
+        return *this;
+    }
+    /// key_min_length(lo) and key_max_length(hi).
+    template <class U = Target>
+    Var& key_length(std::uint64_t lo, std::uint64_t hi) {
+        key_min_length<U>(lo);
+        return key_max_length<U>(hi);
     }
 
 private:
@@ -508,7 +553,10 @@ private:
         else if constexpr (detail::is_int_v<Target>) return Value(static_cast<std::int64_t>(v));
         else if constexpr (std::is_floating_point_v<Target>) return Value(static_cast<double>(v));
         else if constexpr (std::is_same_v<Target, std::string>) return Value(v);
-        else if constexpr (detail::is_duration<Target>::value)
+        else if constexpr (std::is_same_v<Target, KeySet>) {
+            Value::List out(v.keys().begin(), v.keys().end());
+            return Value(std::move(out));
+        } else if constexpr (detail::is_duration<Target>::value)
             return Value(std::chrono::duration_cast<Duration>(v));
         else if constexpr (std::is_enum_v<Target>) {
             for (const auto& [name, value] : enum_map_)
@@ -531,7 +579,11 @@ private:
         else if constexpr (detail::is_int_v<Target>) return static_cast<Target>(v.as_int());
         else if constexpr (std::is_floating_point_v<Target>) return static_cast<Target>(v.as_float());
         else if constexpr (std::is_same_v<Target, std::string>) return v.as_string();
-        else if constexpr (detail::is_duration<Target>::value)
+        else if constexpr (std::is_same_v<Target, KeySet>) {
+            std::vector<std::string> keys;
+            for (const auto& k : v.as_list()) keys.push_back(k.as_string());
+            return KeySet(std::move(keys));
+        } else if constexpr (detail::is_duration<Target>::value)
             return std::chrono::duration_cast<Target>(v.as_duration());
         else if constexpr (std::is_enum_v<Target>) {
             for (const auto& [name, value] : enum_map_)
@@ -763,8 +815,9 @@ public:
     /// `std::uint16_t`...); `double`/`float`; `std::string` (`string`, or
     /// `url` with schemes(), or `enum` with values()); `std::chrono`
     /// durations; a C++ enum with values({{name, value}}); `std::vector` of
-    /// strings or integers (a `csv` list); any other type with a
-    /// json_schema() (a `json` value, bound with nlohmann's from_json).
+    /// strings or integers (a `csv` list); docuconf::KeySet (a `keySet`,
+    /// always secret); any other type with a json_schema() (a `json`
+    /// value, bound with nlohmann's from_json).
     /// Wrap it in `std::optional` for an optional variable with no default;
     /// any other variable without a default is required.
     ///

@@ -82,7 +82,11 @@ TEST(Export, TheContractLoadsInContractFirstMode) {
     // The exported contract, read back as JSON, accepts and rejects the
     // same values as the declaration.
     Gateway g;
-    auto contract = docuconf::Contract::from_json(nlohmann::json::parse(g.config.export_json().dump()));
+    // Variables only: contract-first mode would read the file inputs too,
+    // and the files tests cover those.
+    auto exported = nlohmann::json::parse(g.config.export_json().dump());
+    exported.erase("files");
+    auto contract = docuconf::Contract::from_json(exported);
     docuconf::Env env = {{"POD_NAMESPACE", "prod"},
                          {"PARTNER_KEYSTORE_PASSWORD", "pw"},
                          {"DATABASE_URL", "postgres://db/app"},

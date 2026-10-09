@@ -20,9 +20,32 @@ bool Values::is_secret(const std::string& name) const {
     return std::find(secrets_.begin(), secrets_.end(), name) != secrets_.end();
 }
 
+std::optional<KeySet> Values::key_set(const std::string& name) const {
+    const Value* v = get(name);
+    if (!v || !v->is_list()) return std::nullopt;
+    std::vector<std::string> keys;
+    for (const auto& k : v->as_list()) {
+        if (!k.is_string()) return std::nullopt;
+        keys.push_back(k.as_string());
+    }
+    return KeySet(std::move(keys));
+}
+
+const FileValue* Values::file(const std::string& name) const {
+    auto it = files_.find(name);
+    if (it == files_.end() || !it->second) return nullptr;
+    return &*it->second;
+}
+
 nlohmann::json Values::to_json() const {
     nlohmann::json out = nlohmann::json::object();
     for (const auto& [k, v] : values_) out[k] = v ? v->to_json() : nlohmann::json(nullptr);
+    for (const auto& [k, f] : files_) {
+        if (!f) out[k] = nullptr;
+        else if (f->type == FileType::Config) out[k] = f->document;
+        else if (f->type == FileType::Text) out[k] = f->content;
+        else out[k] = true;
+    }
     return out;
 }
 
@@ -110,6 +133,90 @@ struct Fields {
     }
 };
 
+void read_deprecated(Fields& f, std::optional<std::string>& message, std::string& replaced_by) {
+    const json* d = f.get("deprecated");
+    if (!d) return;
+    if (!d->is_object() || !d->contains("message") || !(*d)["message"].is_string()) {
+        f.bad("deprecated must be an object with a message");
+        return;
+    }
+    message = (*d)["message"].get<std::string>();
+    if (d->contains("replacedBy")) {
+        if ((*d)["replacedBy"].is_string()) replaced_by = (*d)["replacedBy"].get<std::string>();
+        else f.bad("deprecated.replacedBy must be a string");
+    }
+}
+
+FileSpec file_from_json(const std::string& name, const json& j, std::vector<std::string>& problems) {
+    FileSpec spec;
+    spec.name = name;
+    if (!j.is_object()) {
+        problems.push_back(name + ": must be an object");
+        return spec;
+    }
+    Fields f{name, j, problems};
+    std::string type = f.str("type").value_or("");
+    static const std::map<std::string, FileType> types = {
+        {"config", FileType::Config}, {"tls", FileType::Tls},   {"caBundle", FileType::CaBundle},
+        {"keystore", FileType::Keystore}, {"text", FileType::Text}, {"binary", FileType::Binary}};
+    auto t = types.find(type);
+    if (t == types.end()) {
+        f.bad("unknown file type " + detail::quote(type));
+        return spec;
+    }
+    spec.type = t->second;
+    spec.description = f.str("description").value_or("");
+    spec.details = f.str("details");
+    spec.required = f.boolean("required");
+    spec.secret = f.boolean("secret");
+    spec.path = f.str("path").value_or("");
+    spec.path_env = f.str("pathEnv").value_or("");
+    spec.reload = f.str("reload").value_or("restart");
+    spec.max_size = f.uint("maxSize");
+    spec.group = f.str("group").value_or("");
+    read_deprecated(f, spec.deprecated, spec.replaced_by);
+    spec.format = f.str("format").value_or(spec.type == FileType::Keystore ? "pkcs12" : "");
+    if (const json* s = f.get("schema")) spec.schema = *s;
+    spec.dns_names = f.strs("dnsNames");
+    spec.key_algorithms = f.strs("keyAlgorithms");
+    if (auto m = f.str("minRemaining")) {
+        spec.min_remaining = parse_go_duration(*m);
+        if (!spec.min_remaining) f.bad("minRemaining " + detail::quote(*m) + " is not a Go duration");
+    }
+    spec.require_ca = f.boolean("requireCA");
+    spec.min_certificates = f.uint("minCertificates").value_or(1);
+    spec.password_var = f.str("passwordVar").value_or("");
+    spec.pattern = f.str("pattern");
+    spec.min_length = f.uint("minLength");
+    spec.max_length = f.uint("maxLength");
+    return spec;
+}
+
+Overlay overlay_from_json(const std::string& name, const json& j, std::vector<std::string>& problems) {
+    Overlay ov;
+    ov.name = name;
+    std::string label = "overlay " + name;
+    if (!j.is_object()) {
+        problems.push_back(label + ": must be an object");
+        return ov;
+    }
+    Fields f{label, j, problems};
+    if (!detail::is_input_name(name)) f.bad("name must be a DNS label");
+    ov.format = f.str("format").value_or("");
+    if (ov.format != "json" && ov.format != "yaml" && ov.format != "toml") f.bad("format must be json, yaml or toml");
+    ov.path = f.str("path").value_or("");
+    if (ov.path.empty() || ov.path[0] != '/' || ov.path.back() == '/' || ov.path.find("//") != std::string::npos ||
+        ov.path.find("/./") != std::string::npos || ov.path.find("/../") != std::string::npos)
+        f.bad("path " + detail::quote(ov.path) + " must be absolute and normalised");
+    ov.key_separator = f.str("keySeparator").value_or("");
+    if (ov.key_separator != ":" && ov.key_separator != ".") f.bad("keySeparator must be \":\" or \".\"");
+    ov.reload = f.str("reload").value_or("restart");
+    if (ov.reload == "watch")
+        f.bad("reload \"watch\" is not supported: docuconf reads overlays once, at boot; use \"restart\"");
+    else if (ov.reload != "restart") f.bad("reload must be \"restart\"");
+    return ov;
+}
+
 VarSpec var_from_json(const std::string& name, const json& j, std::vector<std::string>& problems) {
     VarSpec spec;
     spec.name = name;
@@ -122,7 +229,8 @@ VarSpec var_from_json(const std::string& name, const json& j, std::vector<std::s
     static const std::map<std::string, VarType> types = {
         {"string", VarType::String}, {"int", VarType::Int},   {"float", VarType::Float},
         {"bool", VarType::Bool},     {"duration", VarType::Duration}, {"url", VarType::Url},
-        {"enum", VarType::Enum},     {"list", VarType::List}, {"json", VarType::Json}};
+        {"enum", VarType::Enum},     {"list", VarType::List}, {"json", VarType::Json},
+        {"keySet", VarType::KeySet}};
     auto t = types.find(type);
     if (t == types.end()) {
         f.bad("unknown type " + detail::quote(type));
@@ -154,11 +262,19 @@ VarSpec var_from_json(const std::string& name, const json& j, std::vector<std::s
         else if (enc == "timespan") spec.duration_encoding = DurationEncoding::Timespan;
         else f.bad("unknown duration encoding " + detail::quote(enc));
     }
-    if (spec.type == VarType::List) {
-        std::string items = f.str("items").value_or("");
-        if (items == "string") spec.items = ItemType::String;
-        else if (items == "int") spec.items = ItemType::Int;
-        else f.bad("list items " + detail::quote(items) + " must be \"string\" or \"int\"");
+    if (spec.type == VarType::List || spec.type == VarType::KeySet) {
+        if (spec.type == VarType::List) {
+            std::string items = f.str("items").value_or("");
+            if (items == "string") spec.items = ItemType::String;
+            else if (items == "int") spec.items = ItemType::Int;
+            else f.bad("list items " + detail::quote(items) + " must be \"string\" or \"int\"");
+        } else {
+            spec.items = ItemType::String;
+            spec.min_keys = f.uint("minKeys").value_or(1);
+            spec.max_keys = f.uint("maxKeys").value_or(2);
+            spec.key_min_length = f.uint("keyMinLength");
+            spec.key_max_length = f.uint("keyMaxLength");
+        }
         std::string enc = f.str("encoding").value_or("csv");
         if (enc == "csv") {
             spec.list_encoding = ListEncoding::Csv;
@@ -180,12 +296,7 @@ VarSpec var_from_json(const std::string& name, const json& j, std::vector<std::s
     if (spec.type == VarType::Json) {
         if (const json* s = f.get("schema")) spec.schema = *s;
     }
-    if (const json* d = f.get("deprecated")) {
-        if (d->is_object()) {
-            spec.deprecated = d->value("message", std::string());
-            spec.replaced_by = d->value("replacedBy", std::string());
-        }
-    }
+    read_deprecated(f, spec.deprecated, spec.replaced_by);
     if (const json* d = f.get("default")) {
         std::string err;
         auto v = detail::value_from_json(spec, *d, err);
@@ -254,6 +365,11 @@ Contract Contract::from_json(const nlohmann::json& top) {
                         problems.push_back("profile " + profile + ": " + k + " is not a declared variable");
                         continue;
                     }
+                    if (var->secret) {
+                        problems.push_back("profile " + profile + ": " + k +
+                                           " is secret, and a secret has no value in a config file");
+                        continue;
+                    }
                     std::string err;
                     auto v = detail::value_from_json(*var, val, err);
                     if (!v) {
@@ -268,18 +384,76 @@ Contract Contract::from_json(const nlohmann::json& top) {
         }
         c.profiles_ = std::move(prof);
     }
+
+    if (top.contains("files") && !top["files"].is_null()) {
+        if (!top["files"].is_object()) {
+            problems.push_back("files must be an object");
+        } else {
+            for (const auto& [name, spec] : top["files"].items()) c.files_.push_back(file_from_json(name, spec, problems));
+            std::sort(c.files_.begin(), c.files_.end(),
+                      [](const FileSpec& a, const FileSpec& b) { return a.name < b.name; });
+            auto p = detail::validate_files(c.files_, c.vars_);
+            problems.insert(problems.end(), p.begin(), p.end());
+        }
+    }
+    if (top.contains("overlays") && !top["overlays"].is_null()) {
+        if (!top["overlays"].is_object()) {
+            problems.push_back("overlays must be an object");
+        } else {
+            for (const auto& [name, spec] : top["overlays"].items())
+                c.overlays_.push_back(overlay_from_json(name, spec, problems));
+            std::sort(c.overlays_.begin(), c.overlays_.end(),
+                      [](const Overlay& a, const Overlay& b) { return a.name < b.name; });
+        }
+    }
+#if !DOCUCONF_FILE_INPUTS
+    if (!c.files_.empty() || !c.overlays_.empty())
+        problems.push_back("the contract has file inputs or overlays, which this build of docuconf cannot read (it "
+                           "was built with DOCUCONF_FILE_INPUTS=OFF)");
+#endif
     if (!problems.empty()) throw DeclarationError(std::move(problems));
     return c;
 }
 
+Contract& Contract::on_warning(std::function<void(const std::string&)> sink) {
+    warn_ = std::move(sink);
+    return *this;
+}
+
 Values Contract::load(const Env& env) const {
     std::vector<Violation> violations;
-    auto values = detail::load_vars(vars_, env, profiles_ ? &*profiles_ : nullptr, violations, nullptr);
+    std::vector<std::string> warnings;
+    auto root_it = env.find("DOCUCONF_FILE_ROOT");
+    std::string root = root_it == env.end() ? "" : root_it->second;
+    std::string selector = profiles_ ? profiles_->selector : "";
+    auto layers = detail::load_overlays(overlays_, vars_, selector, root, violations, warnings);
+    auto values =
+        detail::load_vars(vars_, env, profiles_ ? &*profiles_ : nullptr, violations, &warnings, &layers);
+    auto loaded = detail::load_files(files_, env, values, root, violations);
+    std::map<std::string, std::optional<FileValue>> files;
+    for (const auto& f : files_) {
+        auto it = loaded.find(f.name);
+        if (it == loaded.end() || !it->second.present) {
+            files[f.name] = std::nullopt;
+            continue;
+        }
+        const auto& l = it->second;
+        if (f.deprecated)
+            warnings.push_back(f.name + " is deprecated: " + *f.deprecated +
+                               (f.replaced_by.empty() ? "" : "; use " + f.replaced_by));
+        files[f.name] = FileValue{f.type, l.path, l.content, l.key, l.ca, l.document, l.certificates};
+    }
+    for (const auto& w : warnings) {
+        if (warn_) warn_(w);
+        else std::cerr << "docuconf: warning: " << w << std::endl;
+    }
     if (!violations.empty()) throw ValidationError(std::move(violations));
     std::vector<std::string> secrets;
     for (const auto& v : vars_)
         if (v.secret) secrets.push_back(v.name);
-    return Values(std::move(values), std::move(secrets));
+    for (const auto& f : files_)
+        if (f.secret) secrets.push_back(f.name);
+    return Values(std::move(values), std::move(secrets), std::move(files));
 }
 
 Values Contract::load_process_env() const {
