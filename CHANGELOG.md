@@ -4,6 +4,35 @@ All notable changes to docuconf-cpp are documented here. Entries after 0.1.0 are
 [release-please](https://github.com/googleapis/release-please) from Conventional Commit messages; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.2.0](https://github.com/Docuconf/docuconf-cpp/compare/v0.1.0...v0.2.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* Contract::load now reads the contract's file inputs and overlays (they were ignored), so a contract with a required file fails without it; the environment-only build rejects such contracts. Go durations accept a sign ("-5s", "+5s"), ".5s" and "1.s"; ISO 8601 durations accept fractions on every component. Integers take a leading "+". A tls.crt or ca.crt with no PEM certificate is file_malformed (was certificate_invalid), and a CA bundle certificate that does not parse is certificate_invalid (was file_malformed). A string profile selector set to "" now selects the "" profile instead of the default. A required deprecated input, or a blank or over-long deprecated message, is a DeclarationError. VarType has a new KeySet value.
+
+### Features
+
+* beta suite (keySet, deprecated rules, strict parsing, files, profiles, overlays) ([244bd2e](https://github.com/Docuconf/docuconf-cpp/commit/244bd2e6601d622420f2ad8fbe13838d2241ac4c))
+* beta suite (keySet, deprecated rules, strict parsing, files, profiles, overlays) ([a518039](https://github.com/Docuconf/docuconf-cpp/commit/a51803981b5b2b35d319910fecf7535f2fdef2e6))
+* **examples:** dual-key webhook key set with rotation ([eb83aef](https://github.com/Docuconf/docuconf-cpp/commit/eb83aef1d990b523286d4b59f87ae3496a1838d7))
+* **examples:** dual-key webhook key set with rotation ([6a478f9](https://github.com/Docuconf/docuconf-cpp/commit/6a478f90bd8f7818ac7a8ca4244843d99db9262c))
+* export description and details from doc comments ([aba475d](https://github.com/Docuconf/docuconf-cpp/commit/aba475daed5a3cd5c3cf7a480f2c8c58319a86ab))
+* export description and details from doc comments ([c8e86c8](https://github.com/Docuconf/docuconf-cpp/commit/c8e86c8d27c1f8b5ca9f06da49072c7a2d7e86f0))
+* maxLength on url/json and item length limits on string lists ([416edae](https://github.com/Docuconf/docuconf-cpp/commit/416edae3c3cd2bb63991e3b064d5d237380d55e7))
+* maxLength on url/json and item length limits on string lists ([36eae17](https://github.com/Docuconf/docuconf-cpp/commit/36eae174f906632c751d2c6cbff62ebfd7e3c11c))
+* reload hooks and status; one empty-key message ([9a90efb](https://github.com/Docuconf/docuconf-cpp/commit/9a90efb13ff025d9662501a85cc60b27553ee252))
+* reload hooks and status; one empty-key message ([5461333](https://github.com/Docuconf/docuconf-cpp/commit/546133352b07898324906c2d7267fd799d625710))
+* reload: watch for file inputs ([d9e27db](https://github.com/Docuconf/docuconf-cpp/commit/d9e27db2e58d62b558819f27333ae36cb2c4d00b))
+* reload: watch for file inputs ([8a9d4f8](https://github.com/Docuconf/docuconf-cpp/commit/8a9d4f8b17fa207f7b2031ba8e416cc4b111084b))
+
+
+### Documentation
+
+* **examples:** length limit, generated CONFIG docs, and link docuconf.dev ([a0ba492](https://github.com/Docuconf/docuconf-cpp/commit/a0ba4923f91acc73890e3ea899f71d7267298ccf))
+* **examples:** length limits and generated CONFIG docs ([650a6d9](https://github.com/Docuconf/docuconf-cpp/commit/650a6d941ddf601b1495c3f89cc4aea41ba59895))
+* link docuconf.dev ([76026fd](https://github.com/Docuconf/docuconf-cpp/commit/76026fd498cff850956015c3506f5c472ab47c42))
+
 ## 0.1.0
 
 First version: typed configuration contracts for [CLI11](https://github.com/CLIUtils/CLI11), implementing spec

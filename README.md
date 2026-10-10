@@ -14,7 +14,7 @@ Part of [docuconf](https://github.com/docuconf). See the
 **Example:** [`examples/orders/`](examples/orders/), a small HTTP service with its declaration, exported contract
 and boot-time errors.
 
-> **Status:** `0.1.0`, not released yet. The contract format is a draft (`v1alpha1`) and the API may change. <!-- x-release-please-version -->
+> **Status:** `0.2.0`, not released yet. The contract format is a draft (`v1alpha1`) and the API may change. <!-- x-release-please-version -->
 > Licensed under the [MIT licence](LICENSE).
 
 ## 1. Install
