@@ -522,16 +522,17 @@ std::vector<Problem> check_value(const VarSpec& spec, const Value& v, const std:
             if (n > spec.max_keys)
                 out.emplace_back(Code::TooManyItems, "has " + std::to_string(n) + " keys, above maxKeys " +
                                                          std::to_string(spec.max_keys));
-            // One violation per variable: the first key out of bounds.
+            // One violation per variable: the first key out of bounds,
+            // named by its 1-based position as received (SPEC §4.3).
             for (std::size_t i = 0; i < keys.size(); ++i) {
                 if (!keys[i].is_string()) {
                     out.emplace_back(Code::InvalidType, "has a key that is not a string");
                     break;
                 }
                 std::uint64_t len = rune_count(keys[i].as_string());
-                std::string at = "key " + std::to_string(i);
+                std::string at = "key " + std::to_string(i + 1);
                 if (len == 0) {
-                    out.emplace_back(Code::OutOfRange, at + " is empty (a stray separator?)");
+                    out.emplace_back(Code::OutOfRange, at + " is empty");
                     break;
                 }
                 if (spec.key_min_length && len < *spec.key_min_length) {

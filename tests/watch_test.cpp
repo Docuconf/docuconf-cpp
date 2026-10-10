@@ -4,6 +4,10 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <condition_variable>
+#include <cstdlib>
+#include <mutex>
+#include <stdexcept>
 #include <thread>
 
 #include "test_util.hpp"
@@ -288,6 +292,203 @@ TEST(Watch, ReadersAndReloadsOnManyThreads) {
     EXPECT_EQ(motd.current()->content, "v" + std::to_string(kVersions + 1));
 }
 
+// ---- On-change hooks and reload status ----
+
+TEST(WatchHooks, FireOnAcceptedChangesOnly) {
+    TempDir d;
+    Volume vol(d.path / "etc/svc/licence");
+    vol.publish({{"licence.key", "ABC-123"}});
+    Svc s;
+    docuconf::Watched<docuconf::TextFile> licence;
+    s.config.add_file("licence", licence, "Licence key")
+        .path("/etc/svc/licence/licence.key")
+        .required()
+        .secret()
+        .pattern("^[A-Z0-9-]+$");
+    s.config.load(root_env(d));
+    licence.check_interval(std::chrono::hours(1));  // only refresh() checks here
+
+    std::vector<std::string> first, second;
+    auto sub1 = licence.on_change([&](std::shared_ptr<const docuconf::TextFile> v) { first.push_back(v->content); });
+    licence.on_change([&](std::shared_ptr<const docuconf::TextFile> v) {
+        // The hook sees the new value through current() as well.
+        EXPECT_EQ(licence.current()->content, v->content);
+        second.push_back(v->content);
+    });
+
+    vol.publish({{"licence.key", "not a licence"}});  // rejected: no hook
+    EXPECT_FALSE(licence.refresh());
+    EXPECT_TRUE(first.empty());
+    EXPECT_TRUE(second.empty());
+
+    vol.publish({{"licence.key", "XYZ-789"}});
+    EXPECT_TRUE(licence.refresh());
+    EXPECT_EQ(first, std::vector<std::string>{"XYZ-789"});
+    EXPECT_EQ(second, std::vector<std::string>{"XYZ-789"});
+
+    sub1.cancel();
+    sub1.cancel();  // idempotent
+    vol.publish({{"licence.key", "NEW-456"}});
+    EXPECT_TRUE(licence.refresh());
+    EXPECT_EQ(first, std::vector<std::string>{"XYZ-789"});
+    EXPECT_EQ(second, (std::vector<std::string>{"XYZ-789", "NEW-456"}));
+    for (const auto& w : s.warnings) EXPECT_EQ(w.find("not a licence"), std::string::npos) << w;
+}
+
+TEST(WatchHooks, AThrowingHookDoesNotStopTheReload) {
+    TempDir d;
+    Volume vol(d.path / "etc/svc/creds");
+    vol.publish({{"token.txt", "first"}});
+    Svc s;
+    docuconf::Watched<docuconf::TextFile> token;
+    s.config.add_file("token", token, "API token").path("/etc/svc/creds/token.txt").required().secret();
+    s.config.load(root_env(d));
+    token.check_interval(std::chrono::hours(1));
+    int before = 0, after = 0;
+    token.on_change([&](std::shared_ptr<const docuconf::TextFile>) { ++before; });
+    token.on_change([](std::shared_ptr<const docuconf::TextFile> v) {
+        throw std::runtime_error("bad token " + v->content);
+    });
+    token.on_change([](std::shared_ptr<const docuconf::TextFile>) { throw 42; });
+    token.on_change([&](std::shared_ptr<const docuconf::TextFile>) { ++after; });
+
+    vol.publish({{"token.txt", "second-s3cret"}});
+    EXPECT_TRUE(token.refresh());
+    EXPECT_EQ(token.current()->content, "second-s3cret");
+    EXPECT_EQ(token.generation(), 2u);
+    EXPECT_EQ(before, 1);
+    EXPECT_EQ(after, 1);
+    ASSERT_EQ(s.warnings.size(), 2u);
+    EXPECT_EQ(s.warnings[0],
+              "token: an on-change hook threw std::runtime_error; the new value stays and the other hooks ran");
+    EXPECT_EQ(s.warnings[1].rfind("token: an on-change hook threw ", 0), 0u) << s.warnings[1];
+    for (const auto& w : s.warnings) EXPECT_EQ(w.find("s3cret"), std::string::npos) << w;
+}
+
+TEST(WatchHooks, FireWithoutAnyRead) {
+    TempDir d;
+    Volume vol(d.path / "etc/svc/motd");
+    vol.publish({{"motd.txt", "one"}});
+    Svc s;
+    docuconf::Watched<docuconf::TextFile> motd;
+    s.config.add_file("motd", motd, "Message of the day").path("/etc/svc/motd/motd.txt").required();
+    s.config.load(root_env(d));
+    motd.check_interval(std::chrono::milliseconds(10));
+    std::mutex m;
+    std::condition_variable cv;
+    std::string seen;
+    motd.on_change([&](std::shared_ptr<const docuconf::TextFile> v) {
+        std::lock_guard<std::mutex> lock(m);
+        seen = v->content;
+        cv.notify_all();
+    });
+    vol.publish({{"motd.txt", "two"}});
+    // Nothing calls current() or refresh(): the background check reloads.
+    std::unique_lock<std::mutex> lock(m);
+    EXPECT_TRUE(cv.wait_for(lock, std::chrono::seconds(10), [&] { return seen == "two"; }));
+}
+
+TEST(WatchHooks, BeforeLoadRegistersNothing) {
+    docuconf::Watched<docuconf::TextFile> motd;
+    auto sub = motd.on_change([](std::shared_ptr<const docuconf::TextFile>) {});
+    sub.cancel();
+    auto st = motd.reload_status();
+    EXPECT_EQ(st.generation, 0u);
+    EXPECT_FALSE(st.last_reload);
+    EXPECT_FALSE(st.last_rejected);
+}
+
+TEST(WatchStatus, GenerationLastReloadAndLastRejected) {
+    TempDir d;
+    Volume vol(d.path / "etc/svc/licence");
+    vol.publish({{"licence.key", "ABC-123"}});
+    Svc s;
+    docuconf::Watched<docuconf::TextFile> licence;
+    s.config.add_file("licence", licence, "Licence key")
+        .path("/etc/svc/licence/licence.key")
+        .required()
+        .pattern("^[A-Z0-9-]+$");
+    s.config.load(root_env(d));
+    auto st = licence.reload_status();
+    EXPECT_EQ(st.generation, 1u);
+    EXPECT_FALSE(st.last_reload);
+    EXPECT_FALSE(st.last_rejected);
+
+    auto t0 = std::chrono::system_clock::now();
+    vol.publish({{"licence.key", "XYZ-789"}});
+    EXPECT_TRUE(licence.refresh());
+    st = licence.reload_status();
+    EXPECT_EQ(st.generation, 2u);
+    ASSERT_TRUE(st.last_reload);
+    EXPECT_GE(*st.last_reload, t0);
+    EXPECT_FALSE(st.last_rejected);
+
+    vol.publish({{"licence.key", "not a licence"}});
+    EXPECT_FALSE(licence.refresh());
+    st = licence.reload_status();
+    EXPECT_EQ(st.generation, 2u);
+    ASSERT_TRUE(st.last_rejected);
+    EXPECT_EQ(st.last_rejected->input, "licence");
+    EXPECT_EQ(st.last_rejected->codes, std::vector<Code>{Code::PatternMismatch});
+    EXPECT_GE(st.last_rejected->time, *st.last_reload);
+
+    // A later accepted change clears it.
+    vol.publish({{"licence.key", "NEW-456"}});
+    EXPECT_TRUE(licence.refresh());
+    st = licence.reload_status();
+    EXPECT_EQ(st.generation, 3u);
+    EXPECT_FALSE(st.last_rejected);
+}
+
+// A reload opens the keystore with the password read at boot: the process
+// environment is not read again, and a keystore that needs another
+// password is keystore_unreadable while the previous value stays.
+TEST(WatchKeystore, ReloadKeepsTheBootPassword) {
+    auto one = testutil::make_cert({"RSA", "partner"});
+    auto two = testutil::make_cert({"RSA", "partner"});
+    TempDir d;
+    Volume vol(d.path / "etc/svc/partner");
+    vol.publish({{"ks.p12", testutil::make_pkcs12(one, "changeit")}});
+    ::setenv("DOCUCONF_FILE_ROOT", d.str().c_str(), 1);
+    ::setenv("KS_PASSWORD", "changeit", 1);
+    Svc s;
+    std::string password;
+    docuconf::Watched<docuconf::Keystore> ks;
+    s.config.add_var("KS_PASSWORD", password, "Keystore password").secret();
+    s.config.add_file("partner", ks, "Partner client keystore")
+        .path("/etc/svc/partner/ks.p12")
+        .format("pkcs12")
+        .password_var("KS_PASSWORD")
+        .required();
+    const char* argv[] = {"svc"};
+    s.config.parse(1, argv);
+    ::unsetenv("DOCUCONF_FILE_ROOT");
+    auto boot = ks.current()->data;
+
+    // The password is rotated in the environment and the keystore with it:
+    // a running process keeps the boot password, so the reload is rejected.
+    ::setenv("KS_PASSWORD", "rotated", 1);
+    vol.publish({{"ks.p12", testutil::make_pkcs12(two, "rotated")}});
+    EXPECT_FALSE(ks.refresh());
+    ::unsetenv("KS_PASSWORD");
+    EXPECT_EQ(ks.current()->data, boot);
+    auto st = ks.reload_status();
+    EXPECT_EQ(st.generation, 1u);
+    ASSERT_TRUE(st.last_rejected);
+    EXPECT_EQ(st.last_rejected->codes, std::vector<Code>{Code::KeystoreUnreadable});
+    ASSERT_EQ(s.warnings.size(), 1u);
+    EXPECT_NE(s.warnings[0].find("(keystore_unreadable)"), std::string::npos) << s.warnings[0];
+    EXPECT_EQ(s.warnings[0].find("rotated"), std::string::npos) << s.warnings[0];
+    EXPECT_EQ(s.warnings[0].find("changeit"), std::string::npos) << s.warnings[0];
+
+    // A new keystore under the boot password is accepted.
+    auto again = testutil::make_pkcs12(two, "changeit");
+    vol.publish({{"ks.p12", again}});
+    EXPECT_TRUE(ks.refresh());
+    EXPECT_EQ(ks.current()->data, again);
+    EXPECT_FALSE(ks.reload_status().last_rejected);
+}
+
 // ---- Contract-first mode ----
 
 const char* kContract = R"({
@@ -353,6 +554,38 @@ TEST(WatchContract, FirstLoadFailureThrows) {
     d.write("etc/app/motd/motd.txt", "NOT LOWER CASE");
     auto c = docuconf::Contract::from_json(std::string(kContract));
     EXPECT_THROW(c.watch(root_env(d)), docuconf::ValidationError);
+}
+
+TEST(WatchContract, HooksAndStatus) {
+    TempDir d;
+    d.write("app/config/platform.yaml", "Catalog:\n  PageSize: 20\n");
+    d.write("etc/app/motd/motd.txt", "hello");
+    auto c = docuconf::Contract::from_json(std::string(kContract));
+    std::vector<std::string> warnings;
+    c.on_warning([&](const std::string& w) { warnings.push_back(w); });
+    auto values = c.watch(root_env(d));
+    values.check_interval(std::chrono::hours(1));
+    std::vector<std::int64_t> sizes;
+    values.on_change([&](std::shared_ptr<const docuconf::Values> v) { sizes.push_back(v->get("PAGE_SIZE")->as_int()); });
+
+    d.write("app/config/platform.yaml", "Catalog:\n  PageSize: 0\n");
+    d.write("etc/app/motd/motd.txt", "NOT LOWER");
+    EXPECT_FALSE(values.refresh());
+    EXPECT_TRUE(sizes.empty());
+    auto st = values.reload_status();
+    EXPECT_EQ(st.generation, 1u);
+    ASSERT_TRUE(st.last_rejected);
+    EXPECT_EQ(st.last_rejected->input, "PAGE_SIZE, motd");
+    EXPECT_EQ(st.last_rejected->codes, (std::vector<Code>{Code::OutOfRange, Code::PatternMismatch}));
+
+    d.write("app/config/platform.yaml", "Catalog:\n  PageSize: 30\n");
+    d.write("etc/app/motd/motd.txt", "fine");
+    EXPECT_TRUE(values.refresh());
+    EXPECT_EQ(sizes, std::vector<std::int64_t>{30});
+    st = values.reload_status();
+    EXPECT_EQ(st.generation, 2u);
+    EXPECT_TRUE(st.last_reload);
+    EXPECT_FALSE(st.last_rejected);
 }
 
 }  // namespace

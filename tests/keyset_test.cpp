@@ -93,6 +93,49 @@ TEST(KeySet, Violations) {
     EXPECT_EQ(e.codes_for("WEBHOOK_KEYS"), std::vector<Code>{Code::MissingRequired});
 }
 
+// SPEC §4.3: an empty key is "key N is empty", N 1-based as received, in
+// both modes, and the message never holds a key.
+TEST(KeySet, EmptyKeyMessage) {
+    struct Case {
+        std::string value;
+        std::string message;
+    };
+    const std::vector<Case> cases = {
+        {"old,", "key 2 is empty"}, {",new", "key 1 is empty"}, {"a,,b", "key 2 is empty"}};
+    for (const auto& c : cases) {
+        CLI::App app;
+        docuconf::Declaration d{app, "svc"};
+        docuconf::KeySet keys;
+        d.add_var("KEYS", keys, "Keys that verify signatures").max_keys(3);
+        try {
+            d.load({{"KEYS", c.value}});
+            ADD_FAILURE() << c.value << ": load succeeded";
+        } catch (const docuconf::ValidationError& e) {
+            ASSERT_EQ(e.violations().size(), 1u) << c.value;
+            EXPECT_EQ(e.violations()[0].code, Code::OutOfRange) << c.value;
+            EXPECT_EQ(e.violations()[0].message, c.message) << c.value;
+        }
+    }
+    auto contract = docuconf::Contract::from_json(std::string(R"({
+        "apiVersion": "docuconf.dev/v1alpha1", "kind": "ConfigContract", "metadata": {"name": "svc"},
+        "vars": {"KEYS": {"type": "keySet", "description": "Keys that verify signatures", "secret": true,
+                          "maxKeys": 3}}})"));
+    for (const auto& c : cases) {
+        try {
+            contract.load({{"KEYS", c.value}});
+            ADD_FAILURE() << c.value << ": load succeeded";
+        } catch (const docuconf::ValidationError& e) {
+            ASSERT_EQ(e.violations().size(), 1u) << c.value;
+            EXPECT_EQ(e.violations()[0].code, Code::OutOfRange) << c.value;
+            EXPECT_EQ(e.violations()[0].message, c.message) << c.value;
+        }
+    }
+    // Lengths name keys by the same 1-based position.
+    Webhooks w;
+    auto e = fails(w, {{"WEBHOOK_KEYS", kOld + ",short-key"}});
+    EXPECT_EQ(e.violations()[0].message, "key 2 is 9 characters, below keyMinLength 32");
+}
+
 TEST(KeySet, Exports) {
     Webhooks w;
     json c = json::parse(w.config.export_json().dump());
