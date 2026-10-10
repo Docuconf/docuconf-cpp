@@ -78,7 +78,7 @@ service at boot instead of locking out the sender:
 $ DATABASE_URL=postgres://orders:pw@localhost:5432/orders WEBHOOK_KEYS=old-webhook-key-0123456789abcdef0123, \
     ./build/examples/orders/orders
 docuconf: 1 configuration problem:
-  WEBHOOK_KEYS: key 1 is empty (a stray separator?) (out_of_range)
+  WEBHOOK_KEYS: key 2 is empty (out_of_range)
 ```
 
 In a values file, the key set is a `secretKeyRef`:

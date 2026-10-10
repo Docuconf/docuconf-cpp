@@ -369,8 +369,111 @@ config.add_file("serving-tls", serving_tls, "Certificate the service serves HTTP
   and one warning per bad version goes to `on_warning`, naming the input and the violations and never a secret's
   content. The next change is checked again. An optional file that disappears becomes absent.
 - `reload("watch")` on a plain target, or `reload("restart")` on a `Watched` one, is a declaration error.
+- A keystore is reopened with the password variable's value read at boot: a running process's environment does
+  not change, so the password is not read again. A new keystore that needs another password is
+  `keystore_unreadable`, and the previous value stays. **Rotating a keystore's password needs a rollout**, which
+  delivers the new keystore and the new password together.
 
-Contract-first mode watches with `contract.watch(env)` (below).
+Contract-first mode watches with `contract.watch(env)` (below), with the same hooks and status.
+
+#### Using a watched value
+
+A value copied once at startup never changes: a TLS server context, an HTTP client or a pool built from it keeps
+the old certificate until it expires, even after the renewed one is mounted. Either read `current()` at each use,
+or rebuild the long-lived object in an on-change hook:
+
+- `on_change(fn)` registers `fn`, called with the new `std::shared_ptr<const T>` after a changed input passes its
+  checks and replaces the current value, never for a change that fails them. It returns a
+  `docuconf::WatchSubscription`; `cancel()` removes the hook (dropping it does not). Several hooks run in
+  registration order, one reload at a time. A hook that throws is reported to `on_warning` by input name and
+  exception type only (never `what()`); the new value stays and the other hooks run.
+- While a hook is registered, a background thread checks the files once per `check_interval` (at least 10ms
+  apart), so hooks run even when nothing calls `current()`. A `current()` or `refresh()` that finds the change
+  first runs the hooks on its own thread instead. Without hooks there is no thread: changes are found by
+  `current()` and `refresh()` alone.
+- `reload_status()` returns a `docuconf::ReloadStatus` for a health check or a metric: `generation` (1 after boot,
+  one more per accepted reload), `last_reload` (the `system_clock` time of the last accepted reload, empty while the
+  boot value is current) and `last_rejected` (a `RejectedReload` with the `time`, the `input` and the violation
+  `codes` of the last change that failed its checks, never its content; cleared by the next accepted change).
+
+A TLS server that picks its certificate on every handshake, and an HTTP client whose TLS context, trusting a CA
+bundle, is rebuilt when the bundle changes (OpenSSL):
+
+```cpp
+// (needs file inputs)
+#include <docuconf/docuconf.hpp>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+
+#include <memory>
+#include <mutex>
+
+docuconf::Watched<docuconf::TlsKeyPair> serving_tls;
+docuconf::Watched<docuconf::CaBundle> upstream_ca;
+
+// TLS server: SSL_CTX_set_cert_cb runs this on every handshake, so a renewed
+// certificate is served from the next connection on.
+int use_current_certificate(SSL* ssl, void*) {
+    std::shared_ptr<const docuconf::TlsKeyPair> pair = serving_tls.current();
+    BIO* cb = BIO_new_mem_buf(pair->certificate_pem.data(), static_cast<int>(pair->certificate_pem.size()));
+    BIO* kb = BIO_new_mem_buf(pair->key_pem.data(), static_cast<int>(pair->key_pem.size()));
+    X509* cert = PEM_read_bio_X509(cb, nullptr, nullptr, nullptr);
+    EVP_PKEY* key = PEM_read_bio_PrivateKey(kb, nullptr, nullptr, nullptr);
+    int ok = cert && key && SSL_use_certificate(ssl, cert) == 1 && SSL_use_PrivateKey(ssl, key) == 1;
+    X509_free(cert);
+    EVP_PKEY_free(key);
+    BIO_free(cb);
+    BIO_free(kb);
+    return ok;
+}
+
+// HTTP client: a TLS context that trusts the bundle's certificates.
+std::shared_ptr<SSL_CTX> client_context(const docuconf::CaBundle& ca) {
+    std::shared_ptr<SSL_CTX> ctx(SSL_CTX_new(TLS_client_method()), SSL_CTX_free);
+    BIO* b = BIO_new_mem_buf(ca.pem.data(), static_cast<int>(ca.pem.size()));
+    while (X509* c = PEM_read_bio_X509(b, nullptr, nullptr, nullptr)) {
+        X509_STORE_add_cert(SSL_CTX_get_cert_store(ctx.get()), c);
+        X509_free(c);
+    }
+    BIO_free(b);
+    SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, nullptr);
+    return ctx;
+}
+
+std::mutex upstream_mutex;
+std::shared_ptr<SSL_CTX> upstream;  // each new connection: SSL_new(upstream_context().get())
+
+std::shared_ptr<SSL_CTX> upstream_context() {
+    std::lock_guard<std::mutex> lock(upstream_mutex);
+    return upstream;
+}
+
+int main(int argc, char** argv) {
+    CLI::App app{"svc"};
+    docuconf::Declaration config{app, "svc"};
+    config.add_file("serving-tls", serving_tls, "Certificate the service serves HTTPS with")
+        .path("/etc/svc/tls")
+        .required();
+    config.add_file("upstream-ca", upstream_ca, "CAs that sign the upstream API's certificate")
+        .path("/etc/svc/upstream-ca/ca.crt")
+        .required();
+    DOCUCONF_PARSE(config, argc, argv);
+
+    std::shared_ptr<SSL_CTX> server(SSL_CTX_new(TLS_server_method()), SSL_CTX_free);
+    SSL_CTX_set_cert_cb(server.get(), use_current_certificate, nullptr);
+
+    upstream = client_context(*upstream_ca.current());
+    upstream_ca.on_change([](std::shared_ptr<const docuconf::CaBundle> ca) {
+        auto fresh = client_context(*ca);
+        std::lock_guard<std::mutex> lock(upstream_mutex);
+        upstream = std::move(fresh);  // connections already open keep the old context
+    });
+
+    // A health check can report the reload state, never the content:
+    docuconf::ReloadStatus status = serving_tls.reload_status();
+    if (status.last_rejected) { /* status.last_rejected->input, ->codes, ->time */ }
+}
+```
 
 ### Types
 
@@ -445,7 +548,8 @@ secret: it has no default, cannot be a flag, and prints as `***` through `operat
 nlohmann::json; `keys()` returns the keys in the order the platform gave them. `min_keys` (default 1) and
 `max_keys` (default 2) bound the number of keys (`too_few_items`, `too_many_items`), and `key_min_length` and
 `key_max_length` each key's length (`out_of_range`). Keys are never trimmed, and an empty key, from a stray
-separator, is always `out_of_range`. No message holds a key. The [orders example](examples/orders/README.md#rotate-a-key)
+separator, is always `out_of_range` with the message `key N is empty`, `N` counting from 1 as the keys were
+received (`old,` has an empty key 2, `,new` an empty key 1). No message holds a key: one names a key by its position. The [orders example](examples/orders/README.md#rotate-a-key)
 verifies webhooks with one, and the generated docs print the rotation steps for every key set.
 
 ### Command-line flags
@@ -569,7 +673,9 @@ The rest of a contract is honoured too, through the same checks as the declarati
 - **`reload: watch`**, for file inputs and overlays: `contract.watch(env)` loads like `load(env)` and returns a
   `docuconf::Watched<docuconf::Values>`. Its `current()` reloads the contract when a watched input's files
   change, as above: the environment and the inputs declared `restart` keep their boot values, and a reload that
-  fails its checks keeps the previous `Values` and warns. `load(env)` reads every input once.
+  fails its checks keeps the previous `Values` and warns. `on_change` and `reload_status()` work as for a file
+  input; a rejected change's `input` names every input with a violation. `load(env)` reads every input once,
+  whatever its `reload`: use `watch(env)` to honour `reload: watch`.
 - **Warnings** go to `contract.on_warning(...)` (standard error by default): a deprecated input that is set, a
   variable set both in the environment and in an overlay, and a watched change that failed its checks. They name the input and the message, never the value.
 

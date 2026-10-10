@@ -78,7 +78,7 @@ code=$?
 set -e
 echo "$out"
 [[ $code -eq 1 ]] || { echo "expected exit code 1, got $code"; exit 1; }
-[[ "$out" == *"WEBHOOK_KEYS: key 1 is empty (a stray separator?) (out_of_range)"* ]] ||
+[[ "$out" == *"WEBHOOK_KEYS: key 2 is empty (out_of_range)"* ]] ||
   { echo "expected WEBHOOK_KEYS out_of_range for the empty key"; exit 1; }
 [[ "$out" != *"webhook-key"* ]] || { echo "a webhook key leaked"; exit 1; }
 

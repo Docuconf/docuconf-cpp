@@ -93,6 +93,8 @@ public:
     /// Validates `env`, as the whole environment: file inputs and overlays
     /// are read from under its DOCUCONF_FILE_ROOT. Throws ValidationError
     /// with every violation. Nothing is written to the termination log.
+    /// Every input is read once, whatever its `reload`; watch() honours
+    /// `reload: watch`.
     Values load(const Env& env) const;
 
     /// Validates the process environment. On failure the violations are
@@ -106,7 +108,10 @@ public:
     /// current() is reloaded, through the same checks, when a watched input's
     /// files change. Inputs declared `restart` and the environment keep
     /// their boot values. A reload that fails its checks keeps the previous
-    /// Values and reports the violations to on_warning. Throws
+    /// Values and reports the violations to on_warning. on_change() hooks and
+    /// reload_status() work as for a watched file input; a rejected change's
+    /// RejectedReload::input names every input with a violation. Keystores
+    /// reopen with the password read at the first load. Throws
     /// ValidationError when the first load fails.
     Watched<Values> watch(const Env& env) const;
 
