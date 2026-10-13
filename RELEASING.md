@@ -55,16 +55,35 @@ FetchContent_MakeAvailable(docuconf)
 or download it, check it with `sha256sum -c docuconf-cpp-0.1.0.tar.gz.sha256`, and build and install it for
 `find_package(docuconf)`.
 
-## Later: vcpkg and Conan
+## vcpkg and Conan Center
 
-Submitting to package managers is a separate step, done once a release exists:
+docuconf is packaged as a port in [microsoft/vcpkg](https://github.com/microsoft/vcpkg) (`ports/docuconf`) and a recipe in
+[conan-center-index](https://github.com/conan-io/conan-center-index) (`recipes/docuconf`), each first submitted by hand. Neither updates itself:
+each version is a pull request to that repository, reviewed by its maintainers.
 
-- **vcpkg:** add a port to [microsoft/vcpkg](https://github.com/microsoft/vcpkg) (`ports/docuconf/portfile.cmake`
-  with `vcpkg_from_github` on the release tag and its SHA-512, plus `vcpkg.json` depending on `cli11`,
-  `nlohmann-json`, `re2`, `openssl`, `yaml-cpp`, `tomlplusplus` and `json-schema-validator`, with a
-  `files` feature mapping to `DOCUCONF_FILE_INPUTS`), then open a pull request there.
-- **Conan:** add a recipe to [conan-center-index](https://github.com/conan-io/conan-center-index)
-  (`recipes/docuconf/all/conanfile.py` and `conandata.yml` pointing at the release tarball and its SHA-256).
+The `package-managers` job in `.github/workflows/release.yml` opens both pull requests after each release, with
+`scripts/package-managers.sh`. For each one it syncs the Docuconf fork (`Docuconf/vcpkg`,
+`Docuconf/conan-center-index`) with upstream, branches `docuconf-X.Y.Z` from upstream's `master`, bumps the version
+and hashes, pushes the branch to the fork and opens the pull request:
+
+- **vcpkg:** `version` in `ports/docuconf/vcpkg.json`, the `SHA512` of GitHub's `vX.Y.Z` archive in
+  `portfile.cmake`, and the version database (`./vcpkg x-add-version docuconf`).
+- **Conan:** a new first entry in `recipes/docuconf/config.yml` and `conandata.yml`, with the release tarball and
+  the SHA-256 this workflow published next to it (checked against the tarball first).
+
+It skips a package manager that does not have docuconf yet or already has the version, and does not push a branch
+or open a pull request that already exists, so re-running the job is safe. A change to the port or recipe itself
+(a new dependency, a new option) is still a hand-made pull request.
+
+**Setup.** The job needs a `PACKAGE_MANAGERS_TOKEN` repository secret: a classic personal access token with the
+`public_repo` scope, from an account that can push to both Docuconf forks. Its owner is the commit author and
+opens the pull requests, so it must have signed the Microsoft CLA (asked on the first vcpkg pull request).
+Fine-grained tokens cannot open pull requests on repositories outside their owner. Without the secret the job
+skips with a warning and the release itself is unaffected.
+
+**After it runs**, watch both pull requests: reviewers' comments and their CI (which builds on Windows and macOS,
+unlike this repository's) are answered by hand. To try the script without pushing anything:
+`DRY_RUN=1 scripts/package-managers.sh X.Y.Z`.
 
 Both build with `-DDOCUCONF_FETCH_DEPS=OFF`, so every dependency comes from the package manager. That is also
 what the install rules need: a build that fetched CLI11, nlohmann/json, RE2, yaml-cpp or toml++ generates no
