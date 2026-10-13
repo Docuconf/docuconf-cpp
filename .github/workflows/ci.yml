@@ -149,6 +149,29 @@ jobs:
           cmake --build build
           ctest --test-dir build --output-on-failure
 
+  newest-cli11:
+    # vcpkg and ConanCenter ship a newer CLI11 than the pinned fetch; 2.5+ changed the help formatter.
+    name: build and test with CLI11 2.7.2
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Install a compiler, CMake, git and OpenSSL only
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ cmake ninja-build git ca-certificates python3 libssl-dev
+      - uses: actions/checkout@v4
+      - name: Check out CLI11 2.7.2
+        uses: actions/checkout@v4
+        with:
+          repository: CLIUtils/CLI11
+          ref: v2.7.2
+          path: cli11
+      - name: Configure, build and test
+        run: |
+          cmake -S . -B build -G Ninja -DDOCUCONF_BUILD_EXAMPLES=OFF -DFETCHCONTENT_SOURCE_DIR_CLI11="$GITHUB_WORKSPACE/cli11"
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+
   example:
     name: orders example
     runs-on: ubuntu-latest
