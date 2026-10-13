@@ -2,7 +2,8 @@ name: Release
 
 # Pushing a tag vX.Y.Z creates a GitHub release with a source tarball. C++
 # has no central registry; consumers use FetchContent, find_package after
-# installing, or (later) vcpkg and Conan. See RELEASING.md.
+# installing, vcpkg or Conan; the package-managers job opens their update pull
+# requests. See RELEASING.md.
 on:
   push:
     tags: ["v*.*.*"]
@@ -37,3 +38,28 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
           fi
           gh release upload "$GITHUB_REF_NAME" docuconf-cpp-*.tar.gz docuconf-cpp-*.tar.gz.sha256 --clobber
+
+  # Opens the pull requests that move vcpkg and Conan Center to this version (scripts/package-managers.sh).
+  # Needs the PACKAGE_MANAGERS_TOKEN secret; see RELEASING.md.
+  package-managers:
+    needs: release
+    name: ${{ matrix.manager }} pull request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        manager: [vcpkg, conan]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_MANAGERS_TOKEN }}
+          ONLY: ${{ matrix.manager }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::PACKAGE_MANAGERS_TOKEN is not set; open the ${ONLY} pull request by hand (RELEASING.md)"
+            exit 0
+          fi
+          scripts/package-managers.sh "${GITHUB_REF_NAME#v}"
