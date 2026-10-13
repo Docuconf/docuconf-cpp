@@ -4,6 +4,14 @@ All notable changes to docuconf-cpp are documented here. Entries after 0.1.0 are
 [release-please](https://github.com/googleapis/release-please) from Conventional Commit messages; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.2.1](https://github.com/Docuconf/docuconf-cpp/compare/v0.2.0...v0.2.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* keep the --help variable and file tables aligned with CLI11 2.6+ ([3b6b6c7](https://github.com/Docuconf/docuconf-cpp/commit/3b6b6c76c80c89838c9e26ad4494cc8d88ebc212))
+* keep the --help variable and file tables aligned with CLI11 2.6+ ([0432862](https://github.com/Docuconf/docuconf-cpp/commit/043286262d286bad8be3a37bc722c2454bebdd17))
+
 ## [0.2.0](https://github.com/Docuconf/docuconf-cpp/compare/v0.1.0...v0.2.0) (2026-10-10)
 
 
