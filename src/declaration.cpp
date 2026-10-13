@@ -24,6 +24,11 @@ Declaration::Declaration(CLI::App& app, std::string service) : app_(app), servic
         ->group("docuconf");
     // --help lists every variable and file input, which are read from the
     // environment and the filesystem rather than the command line.
+#if CLI11_VERSION_MAJOR > 2 || (CLI11_VERSION_MAJOR == 2 && CLI11_VERSION_MINOR >= 6)
+    // CLI11 2.5+ reflows the footer as a paragraph, which collapses the
+    // aligned tables help_footer() writes; 2.6 added the switch to keep it.
+    if (auto formatter = app_.get_formatter()) formatter->enable_footer_formatting(false);
+#endif
     app_.footer([this] {
         try {
             check();
