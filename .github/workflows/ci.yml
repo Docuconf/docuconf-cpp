@@ -33,7 +33,7 @@ jobs:
           - compiler: clang
             cxx: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Pick the docuconf-go ref
         id: dcref
         env:
@@ -44,7 +44,7 @@ jobs:
           elif [ -n "$OVERRIDE" ]; then echo "ref=$OVERRIDE" >> "$GITHUB_OUTPUT"
           else echo "ref=$(tr -d '[:space:]' < .github/docuconf-go.ref)" >> "$GITHUB_OUTPUT"; fi
       - name: Check out docuconf-go
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: docuconf/docuconf-go
           ref: ${{ steps.dcref.outputs.ref }}
@@ -54,7 +54,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build clang libcli11-dev nlohmann-json3-dev libre2-dev \
             libssl-dev libyaml-cpp-dev libtomlplusplus-dev libgtest-dev python3
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
       - name: Install cue
@@ -118,7 +118,7 @@ jobs:
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ cmake ninja-build git ca-certificates python3 \
             ${{ matrix.packages }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build the README quickstart as a new project
         run: tests/readme_consumer.sh "$RUNNER_TEMP/consumer" ${{ matrix.flags }} -G Ninja
 
@@ -131,9 +131,9 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ cmake ninja-build git ca-certificates python3
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check out docuconf-go (conformance cases)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: docuconf/docuconf-go
           ref: main
@@ -159,9 +159,9 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ cmake ninja-build git ca-certificates python3 libssl-dev
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check out CLI11 2.7.2
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: CLIUtils/CLI11
           ref: v2.7.2
@@ -176,7 +176,7 @@ jobs:
     name: orders example
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Pick the docuconf-go ref
         id: dcref
         env:
@@ -187,7 +187,7 @@ jobs:
           elif [ -n "$OVERRIDE" ]; then echo "ref=$OVERRIDE" >> "$GITHUB_OUTPUT"
           else echo "ref=$(tr -d '[:space:]' < .github/docuconf-go.ref)" >> "$GITHUB_OUTPUT"; fi
       - name: Check out docuconf-go
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: docuconf/docuconf-go
           ref: ${{ steps.dcref.outputs.ref }}
@@ -197,7 +197,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build libcli11-dev nlohmann-json3-dev libre2-dev \
             libssl-dev libyaml-cpp-dev libtomlplusplus-dev curl
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
       - name: Install cue
