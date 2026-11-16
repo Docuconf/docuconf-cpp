@@ -11,8 +11,12 @@ JSON/YAML/TOML config files, text and binary files.
 Part of [docuconf](https://github.com/docuconf). See the
 [specification](https://github.com/docuconf/docuconf-go/blob/main/spec/SPEC.md).
 
-**Example:** [`examples/orders/`](examples/orders/), a small HTTP service with its declaration, exported contract
-and boot-time errors.
+**Examples:**
+
+- [`examples/orders/`](examples/orders/), a small HTTP service with its declaration, exported contract and
+  boot-time errors.
+- [`examples/shop/`](examples/shop/), one program with two roles, contract-first: roles, `requiredIf` and an
+  included fragment (`otel@1`).
 
 > **Status:** `0.2.1`, not released yet. The contract format is a draft (`v1alpha1`) and the API may change. <!-- x-release-please-version -->
 > Licensed under the [MIT licence](LICENSE).

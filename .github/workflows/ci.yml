@@ -234,3 +234,57 @@ jobs:
           ~/go/bin/docuconf docs contract.cue --format model --check docs.json
       - name: Smoke test
         run: examples/orders/smoke.sh build-orders/orders
+
+  shop-example:
+    name: shop example
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick the docuconf-go ref
+        id: dcref
+        env:
+          EVENT: ${{ github.event_name }}
+          OVERRIDE: ${{ inputs.docuconf_go_ref }}
+        run: |
+          if [ "$EVENT" = schedule ]; then echo "ref=main" >> "$GITHUB_OUTPUT"
+          elif [ -n "$OVERRIDE" ]; then echo "ref=$OVERRIDE" >> "$GITHUB_OUTPUT"
+          else echo "ref=$(tr -d '[:space:]' < .github/docuconf-go.ref)" >> "$GITHUB_OUTPUT"; fi
+      - name: Check out docuconf-go
+        uses: actions/checkout@v4
+        with:
+          repository: docuconf/docuconf-go
+          ref: ${{ steps.dcref.outputs.ref }}
+          path: docuconf-go
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build libcli11-dev nlohmann-json3-dev libre2-dev \
+            libssl-dev libyaml-cpp-dev libtomlplusplus-dev
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Install cue
+        run: go install cuelang.org/go/cmd/cue@${CUE_VERSION}
+      - name: Build the example against the SDK in this repository
+        run: |
+          cmake -S examples/shop -B build-shop -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-shop --target shop shop_test
+      - name: Test the matrix (roles, requiredIf, the otel@1 fragment)
+        run: ./build-shop/shop_test
+      # Contract-first: contract.json is the contract the app loads, so there
+      # is nothing to re-export. Both files are vetted and must agree.
+      - name: cue vet the contract
+        env:
+          CUE: /home/runner/go/bin/cue
+        run: examples/shop/check-contract.sh docuconf-go/spec/cue
+      - name: Install the docuconf CLI
+        working-directory: docuconf-go/cmd/docuconf
+        run: go install .
+      - name: Generated docs are up to date
+        working-directory: examples/shop
+        run: |
+          ~/go/bin/docuconf docs contract.cue --check CONFIG.md
+          ~/go/bin/docuconf docs contract.cue --format agents --check CONFIG.agents.md
+          ~/go/bin/docuconf docs contract.cue --format model --check docs.json
+      - name: Smoke test
+        run: examples/shop/smoke.sh build-shop/shop
