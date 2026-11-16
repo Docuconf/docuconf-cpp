@@ -212,6 +212,7 @@ endif()
 
 if(DOCUCONF_BUILD_EXAMPLES)
   add_subdirectory(examples/orders)
+  add_subdirectory(examples/shop)
 endif()
 
 # The installed package config finds its dependencies with find_package, so
