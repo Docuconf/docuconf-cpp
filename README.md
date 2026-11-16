@@ -676,6 +676,18 @@ The rest of a contract is honoured too, through the same checks as the declarati
   fails its checks keeps the previous `Values` and warns. `on_change` and `reload_status()` work as for a file
   input; a rejected change's `input` names every input with a violation. `load(env)` reads every input once,
   whatever its `reload`: use `watch(env)` to honour `reload: watch`.
+- **Conditional requirements** (`requiredIf: {VAR: value}`, SPEC §4.2.1): the input is required while VAR's
+  loaded value (the environment, an overlay, the selected profile's default, or its own default) is that value.
+  A missing variable is `missing_required` with `is required when TLS_ENABLED is true`, the value written as JSON
+  (`LOG_FORMAT is "json"`); a missing file is `file_missing`, with `, and is required when ...` after the usual
+  message. A condition variable with a violation of its own makes nothing required. The reader refuses a
+  condition on a secret, on a variable that is not a `string`, `int`, `bool` or `enum`, or with a value that
+  variable cannot hold, and a `requiredIf` input that is required, has a default or is deprecated.
+- **Roles** (SPEC §4.9): with `roles`, `DOCUCONF_ROLE` names the workload's role, and an input whose `roles` leave
+  it out is optional. With no role, or one the contract does not declare, every role-specific input is optional, so
+  the role is the one problem reported. `contract.roles()` and `contract.input_roles("NAME")` return them.
+- **Well-known fragments** (`includes`, SPEC §4.8): a fragment's variables are in the contract inline and read like
+  any other; `contract.includes()` returns the `name@major` list.
 - **Warnings** go to `contract.on_warning(...)` (standard error by default): a deprecated input that is set, a
   variable set both in the environment and in an overlay, and a watched change that failed its checks. They name the input and the message, never the value.
 
@@ -696,10 +708,15 @@ The runner keeps an allow-list of the capability tags it supports and skips a ca
 added to the suite later never breaks it. It supports every tag, so **no case is skipped**: integers are
 `std::int64_t` (`int64`), `json` values are checked against their JSON Schema (`json-schema`), and it has key sets
 (`key-set`), deprecated inputs (`deprecated`), the exact parsing rules (`strict-parsing`), file inputs (`files`,
-including PKCS#12 keystores with AES-256 and a SHA-256 MAC), profiles (`profiles`) and overlays (`overlays`).
+including PKCS#12 keystores with AES-256 and a SHA-256 MAC), profiles (`profiles`), overlays (`overlays`),
+conditional requirements (`required-if`) and roles (`roles`).
 Each case's files are written under a new directory, set as `DOCUCONF_FILE_ROOT`. With
 `DOCUCONF_REQUIRE_NO_SKIPS=1`, as in CI, a skipped case fails the run. The environment-only build cannot read
 files, so it skips the `files` and `overlays` cases. Failures are reported by case id.
+
+`cases.pending.json`, next to `cases.json`, holds the cases of features not every SDK supports yet. A second test,
+`Conformance.PendingCases`, runs it: a case with a tag this runner supports must pass, and one with a tag it does not
+know is skipped without failing. Without the file, that test is skipped.
 
 The shared export fixture (`conformance/export/fixture.yaml`) is declared in
 [`tests/export_fixture_test.cpp`](tests/export_fixture_test.cpp), exported, and compared with

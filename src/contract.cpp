@@ -32,6 +32,8 @@ std::optional<KeySet> Values::key_set(const std::string& name) const {
     return KeySet(std::move(keys));
 }
 
+std::string RequiredIf::str() const { return var + " is " + value.dump(); }
+
 const FileValue* Values::file(const std::string& name) const {
     auto it = files_.find(name);
     if (it == files_.end() || !it->second) return nullptr;
@@ -305,6 +307,84 @@ VarSpec var_from_json(const std::string& name, const json& j, std::vector<std::s
     return spec;
 }
 
+bool is_role_name(const std::string& s) {
+    // ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
+    if (s.empty() || s.size() > 63 || s.front() == '-' || s.back() == '-') return false;
+    return std::all_of(s.begin(), s.end(),
+                       [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'; });
+}
+
+bool is_fragment_ref(const std::string& s) {
+    // ^[a-z][a-z0-9-]*@[1-9][0-9]*$
+    auto at = s.find('@');
+    if (at == std::string::npos || at == 0 || at + 1 >= s.size()) return false;
+    if (!(s[0] >= 'a' && s[0] <= 'z') || s[at + 1] == '0') return false;
+    for (std::size_t i = 0; i < at; ++i) {
+        char c = s[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+    }
+    for (std::size_t i = at + 1; i < s.size(); ++i)
+        if (!(s[i] >= '0' && s[i] <= '9')) return false;
+    return true;
+}
+
+// A list of roles (SPEC §4.9): DNS labels, at least one, none listed twice.
+// `bad` gets each problem; `out` the roles that were read.
+void read_roles(const json& node, const std::function<void(const std::string&)>& bad, std::vector<std::string>& out) {
+    if (!node.is_array() || node.empty() ||
+        !std::all_of(node.begin(), node.end(), [](const json& x) { return x.is_string(); })) {
+        bad("roles must be a list of at least one role name");
+        return;
+    }
+    for (const auto& x : node) {
+        std::string r = x.get<std::string>();
+        if (!is_role_name(r)) bad("role " + detail::quote(r) + " must be a DNS label");
+        else if (std::find(out.begin(), out.end(), r) != out.end()) bad("role " + r + " is listed twice");
+        else out.push_back(r);
+    }
+}
+
+// An input's roles and requiredIf (SPEC §4.9, §4.2.1).
+void read_conditions(Fields& f, bool required, bool has_default, bool deprecated,
+                     std::map<std::string, std::vector<std::string>>& roles,
+                     std::map<std::string, RequiredIf>& required_if) {
+    if (const json* r = f.get("roles")) {
+        std::vector<std::string> used;
+        read_roles(*r, [&](const std::string& m) { f.bad(m); }, used);
+        if (!used.empty()) roles[f.name] = std::move(used);
+    }
+    const json* n = f.get("requiredIf");
+    if (!n) return;
+    if (!n->is_object() || n->size() != 1) {
+        f.bad("requiredIf must name one variable and its value: {VAR: value}");
+        return;
+    }
+    auto first = n->begin();
+    std::string var = first.key();
+    const json& v = first.value();
+    bool plain = v.is_string() || v.is_boolean() ||
+                 (v.is_number_integer() &&
+                  (!v.is_number_unsigned() ||
+                   v.get<std::uint64_t>() <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())));
+    if (!detail::is_env_name(var) || !plain) {
+        f.bad("requiredIf must name one variable and a string, integer or boolean value");
+        return;
+    }
+    if (required || has_default) f.bad("an input with requiredIf cannot be required or have a default");
+    if (deprecated) f.bad("a conditionally required input cannot be deprecated: the platform could not stop setting it");
+    // Integers are held signed, so they compare with the int variable's values.
+    required_if[f.name] = RequiredIf{var, v.is_number_integer() ? json(v.get<std::int64_t>()) : v};
+}
+
+// Whether a loaded value is the one a requiredIf names. A bool is never an
+// integer, nor an integer a bool.
+bool holds(const Value& got, const json& want) {
+    if (got.is_string()) return want.is_string() && want.get<std::string>() == got.as_string();
+    if (got.is_bool()) return want.is_boolean() && want.get<bool>() == got.as_bool();
+    if (got.is_int()) return want.is_number_integer() && want.get<std::int64_t>() == got.as_int();
+    return false;
+}
+
 }  // namespace
 
 Contract Contract::from_json(const std::string& text) {
@@ -335,6 +415,11 @@ Contract Contract::from_json(const nlohmann::json& top) {
                 std::vector<std::string> p;
                 VarSpec v = var_from_json(name, spec, p);
                 if (p.empty()) p = detail::validate_var(v);
+                if (spec.is_object()) {
+                    Fields f{name, spec, p};
+                    read_conditions(f, v.required, f.get("default") != nullptr, v.deprecated.has_value(),
+                                    c.input_roles_, c.required_if_);
+                }
                 problems.insert(problems.end(), p.begin(), p.end());
                 c.vars_.push_back(std::move(v));
             }
@@ -388,7 +473,14 @@ Contract Contract::from_json(const nlohmann::json& top) {
         if (!top["files"].is_object()) {
             problems.push_back("files must be an object");
         } else {
-            for (const auto& [name, spec] : top["files"].items()) c.files_.push_back(file_from_json(name, spec, problems));
+            for (const auto& [name, spec] : top["files"].items()) {
+                c.files_.push_back(file_from_json(name, spec, problems));
+                if (spec.is_object()) {
+                    Fields f{name, spec, problems};
+                    const FileSpec& fs = c.files_.back();
+                    read_conditions(f, fs.required, false, fs.deprecated.has_value(), c.input_roles_, c.required_if_);
+                }
+            }
             std::sort(c.files_.begin(), c.files_.end(),
                       [](const FileSpec& a, const FileSpec& b) { return a.name < b.name; });
             auto p = detail::validate_files(c.files_, c.vars_);
@@ -405,6 +497,87 @@ Contract Contract::from_json(const nlohmann::json& top) {
                       [](const Overlay& a, const Overlay& b) { return a.name < b.name; });
         }
     }
+
+    // includes (SPEC §4.8): the fragments' variables are inline in vars.
+    if (top.contains("includes") && !top["includes"].is_null()) {
+        const json& inc = top["includes"];
+        if (!inc.is_array() || !std::all_of(inc.begin(), inc.end(), [](const json& x) { return x.is_string(); })) {
+            problems.push_back("includes must be a list of fragment names, such as otel@1");
+        } else {
+            for (const auto& x : inc) {
+                std::string ref = x.get<std::string>();
+                if (!is_fragment_ref(ref))
+                    problems.push_back("includes: " + detail::quote(ref) + " is not a fragment name, name@major");
+                else if (std::find(c.includes_.begin(), c.includes_.end(), ref) != c.includes_.end())
+                    problems.push_back("includes: " + ref + " is listed twice");
+                else
+                    c.includes_.push_back(ref);
+            }
+        }
+    }
+
+    // roles (SPEC §4.9): every input's roles are the contract's, and
+    // DOCUCONF_ROLE is a required enum of exactly the roles, used by every
+    // role.
+    if (top.contains("roles") && !top["roles"].is_null())
+        read_roles(top["roles"], [&](const std::string& m) { problems.push_back("roles: " + m); }, c.roles_);
+    auto join = [](const std::vector<std::string>& xs) {
+        std::string out;
+        for (const auto& x : xs) out += (out.empty() ? "" : ", ") + x;
+        return out;
+    };
+    for (const auto& [input, used] : c.input_roles_) {
+        if (c.roles_.empty()) {
+            problems.push_back(input + ": has roles, but the contract declares none");
+            continue;
+        }
+        for (const auto& r : used)
+            if (std::find(c.roles_.begin(), c.roles_.end(), r) == c.roles_.end())
+                problems.push_back(input + ": role " + r + " is not one of the contract's roles, " + join(c.roles_));
+    }
+    auto find_var = [&](const std::string& n) -> const VarSpec* {
+        for (const auto& v : c.vars_)
+            if (v.name == n) return &v;
+        return nullptr;
+    };
+    if (!c.roles_.empty()) {
+        const VarSpec* role = find_var(kRoleVar);
+        if (!role || role->type != VarType::Enum || !role->required || c.input_roles_.count(kRoleVar) ||
+            role->values != c.roles_)
+            problems.push_back(std::string(kRoleVar) +
+                               ": a contract with roles declares it as a required enum whose values are the roles, " +
+                               join(c.roles_) + ", used by every role");
+    }
+
+    // requiredIf (SPEC §4.2.1): another declared variable, a plain string,
+    // int, bool or enum one, and a value it can hold.
+    for (const auto& [input, cond] : c.required_if_) {
+        const VarSpec* on = find_var(cond.var);
+        if (cond.var == input || !on) {
+            problems.push_back(input + ": requiredIf must name another declared variable, not " + detail::quote(cond.var));
+            continue;
+        }
+        if (on->secret || !(on->type == VarType::String || on->type == VarType::Int || on->type == VarType::Bool ||
+                             on->type == VarType::Enum)) {
+            problems.push_back(input + ": requiredIf names " + on->name +
+                               ", which is not a plain string, int, bool or enum variable");
+            continue;
+        }
+        bool same = on->type == VarType::Int    ? cond.value.is_number_integer()
+                    : on->type == VarType::Bool ? cond.value.is_boolean()
+                                                : cond.value.is_string();
+        std::string why;
+        if (same) {
+            std::string err;
+            auto v = detail::value_from_json(*on, cond.value, err);
+            if (!v) why = err;
+            else if (auto ps = detail::check_value(*on, *v); !ps.empty()) why = ps.front().second;
+        }
+        if (!same || !why.empty())
+            problems.push_back(input + ": requiredIf: " + cond.str() + " is not a value " + on->name + " can have" +
+                               (why.empty() ? "" : ": " + why));
+    }
+
 #if !DOCUCONF_FILE_INPUTS
     if (!c.files_.empty() || !c.overlays_.empty())
         problems.push_back("the contract has file inputs or overlays, which this build of docuconf cannot read (it "
@@ -412,6 +585,17 @@ Contract Contract::from_json(const nlohmann::json& top) {
 #endif
     if (!problems.empty()) throw DeclarationError(std::move(problems));
     return c;
+}
+
+const std::vector<std::string>& Contract::input_roles(const std::string& input) const {
+    static const std::vector<std::string> none;
+    auto it = input_roles_.find(input);
+    return it == input_roles_.end() ? none : it->second;
+}
+
+const RequiredIf* Contract::required_if(const std::string& input) const {
+    auto it = required_if_.find(input);
+    return it == required_if_.end() ? nullptr : &it->second;
 }
 
 Contract& Contract::on_warning(std::function<void(const std::string&)> sink) {
@@ -442,11 +626,65 @@ Values load_contract(const Contract& c, const Env& env, Pins* pins, bool reload,
     if (pins && reload) docs = pins->overlays;
     auto layers = detail::load_overlays(c.overlays(), c.vars(), selector, root, violations, warnings,
                                         pins ? &docs : nullptr);
-    auto values = detail::load_vars(c.vars(), env, profiles ? &*profiles : nullptr, violations, &warnings, &layers);
+
+    // Roles (SPEC §4.9): an input only other roles use is optional. With no
+    // role, or one the contract does not declare, every role-specific input
+    // is optional, so the role is the one problem reported.
+    std::string role;
+    if (!c.roles().empty()) {
+        auto it = env.find(kRoleVar);
+        if (it != env.end() && std::find(c.roles().begin(), c.roles().end(), it->second) != c.roles().end())
+            role = it->second;
+    }
+    auto in_role = [&](const std::string& input) {
+        const auto& used = c.input_roles(input);
+        return used.empty() || (!role.empty() && std::find(used.begin(), used.end(), role) != used.end());
+    };
+    std::vector<VarSpec> vars = c.vars();
+    for (auto& v : vars)
+        if (!in_role(v.name)) v.required = false;
+    auto values = detail::load_vars(vars, env, profiles ? &*profiles : nullptr, violations, &warnings, &layers);
+
+    // Conditional requirements (SPEC §4.2.1), on the condition variables'
+    // loaded values: the environment, an overlay, the selected profile or
+    // the default. A condition variable with a violation has no value, so it
+    // makes nothing required.
+    auto required_when = [&](const std::string& input) -> std::optional<std::string> {
+        const RequiredIf* cond = c.required_if(input);
+        if (!cond || !in_role(input)) return std::nullopt;
+        auto it = values.find(cond->var);
+        if (it == values.end() || !it->second || !holds(*it->second, cond->value)) return std::nullopt;
+        return cond->str();
+    };
+    std::set<std::string> reported;
+    for (const auto& v : violations) reported.insert(v.input);
+    for (const auto& v : vars) {
+        auto it = values.find(v.name);
+        if (it == values.end() || it->second || reported.count(v.name)) continue;
+        if (auto when = required_when(v.name))
+            violations.push_back(Violation{v.name, Code::MissingRequired, "is required when " + *when});
+    }
+
     std::vector<FileSpec> to_read;
-    for (const auto& f : c.files())
-        if (!(pins && reload && f.reload != "watch")) to_read.push_back(f);
+    std::map<std::string, std::string> file_when;
+    for (const auto& f : c.files()) {
+        if (pins && reload && f.reload != "watch") continue;
+        FileSpec boot = f;
+        auto when = required_when(f.name);
+        boot.required = in_role(f.name) && (f.required || when);
+        if (when) file_when[f.name] = *when;
+        to_read.push_back(std::move(boot));
+    }
+    std::size_t before = violations.size();
     auto loaded = detail::load_files(to_read, env, values, root, violations);
+    for (std::size_t i = before; i < violations.size(); ++i) {
+        Violation& v = violations[i];
+        auto when = file_when.find(v.input);
+        auto lf = loaded.find(v.input);
+        if (v.code == Code::FileMissing && when != file_when.end() && lf != loaded.end() &&
+            v.message == lf->second.path + " does not exist")
+            v.message += ", and is required when " + when->second;
+    }
     std::map<std::string, std::optional<FileValue>> files;
     for (const auto& f : c.files()) {
         if (pins && reload && f.reload != "watch") {

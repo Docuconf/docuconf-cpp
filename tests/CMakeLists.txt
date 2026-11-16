@@ -14,6 +14,7 @@ include(GoogleTest)
 
 if(DOCUCONF_FILE_INPUTS)
   add_executable(docuconf_tests
+    conditional_test.cpp
     conformance_test.cpp
     devx_test.cpp
     doc_test.cpp
@@ -29,6 +30,7 @@ if(DOCUCONF_FILE_INPUTS)
 else()
   # The environment-only build: everything that does not need file inputs.
   add_executable(docuconf_tests
+    conditional_test.cpp
     conformance_test.cpp
     devx_test.cpp
     doc_test.cpp
