@@ -6,6 +6,11 @@
 // DOCUCONF_REQUIRE_CONFORMANCE=1 a missing file fails the test instead of
 // skipping it, and with DOCUCONF_REQUIRE_NO_SKIPS=1 a skipped case fails it
 // too (CI sets both).
+//
+// cases.pending.json, next to cases.json, holds the cases of features not
+// every SDK supports yet. A second test runs it: a case with a tag this
+// runner supports must pass, and one with a tag it does not know is skipped
+// without failing. Without the file, that test is skipped.
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -30,7 +35,7 @@ namespace fs = std::filesystem;
 // need the full build (DOCUCONF_FILE_INPUTS=ON): the environment-only
 // build has no TLS, YAML or TOML readers.
 const std::set<std::string> kSupported = {
-    "int64", "json-schema", "key-set", "deprecated", "strict-parsing", "profiles",
+    "int64", "json-schema", "key-set", "deprecated", "strict-parsing", "profiles", "required-if", "roles",
 #if DOCUCONF_FILE_INPUTS
     "files", "overlays",
 #endif
@@ -173,13 +178,9 @@ std::string run_case(const json& c) {
     }
 }
 
-TEST(Conformance, Cases) {
-    std::string path = cases_path();
-    std::ifstream f(path);
-    if (!f) {
-        if (env_is("DOCUCONF_REQUIRE_CONFORMANCE", "1")) FAIL() << "conformance cases not found at " << path;
-        GTEST_SKIP() << "conformance cases not found at " << path << " (set DOCUCONF_CONFORMANCE)";
-    }
+// Runs every case of the suite at `path`. With `skips_fail`, a skipped case
+// fails the test when DOCUCONF_REQUIRE_NO_SKIPS=1.
+void run_suite(const std::string& path, std::ifstream& f, bool skips_fail) {
     json doc = json::parse(f);
     ASSERT_EQ(doc.value("version", 0), 1) << path << ": unsupported suite version";
     ASSERT_FALSE(doc["cases"].empty()) << path << " holds no cases";
@@ -211,13 +212,30 @@ TEST(Conformance, Cases) {
         }
     }
     std::ostringstream summary;
-    summary << "conformance: " << passed << " passed, " << skipped << " skipped, " << failed.size()
+    summary << fs::path(path).filename().string() << ": " << passed << " passed, " << skipped << " skipped, " << failed.size()
             << " failed, of " << doc["cases"].size() << " cases";
     for (const auto& [t, n] : skipped_tags) summary << " (skipped " << n << " requiring " << t << ")";
     std::cout << summary.str() << std::endl;
     for (const auto& m : failed) ADD_FAILURE() << m;
-    if (skipped > 0 && env_is("DOCUCONF_REQUIRE_NO_SKIPS", "1"))
+    if (skips_fail && skipped > 0 && env_is("DOCUCONF_REQUIRE_NO_SKIPS", "1"))
         ADD_FAILURE() << "docuconf-cpp must run every case, but skipped " << skipped << ": " << summary.str();
+}
+
+TEST(Conformance, Cases) {
+    std::string path = cases_path();
+    std::ifstream f(path);
+    if (!f) {
+        if (env_is("DOCUCONF_REQUIRE_CONFORMANCE", "1")) FAIL() << "conformance cases not found at " << path;
+        GTEST_SKIP() << "conformance cases not found at " << path << " (set DOCUCONF_CONFORMANCE)";
+    }
+    run_suite(path, f, true);
+}
+
+TEST(Conformance, PendingCases) {
+    std::string path = (fs::path(cases_path()).parent_path() / "cases.pending.json").string();
+    std::ifstream f(path);
+    if (!f) GTEST_SKIP() << "pending conformance cases not found at " << path;
+    run_suite(path, f, false);
 }
 
 }  // namespace

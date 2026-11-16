@@ -15,6 +15,12 @@
 // selected profile's default, then a config-file overlay, then the
 // environment. The environment-only build (DOCUCONF_FILE_INPUTS=OFF)
 // rejects a contract with file inputs or overlays.
+//
+// An input with `requiredIf: {VAR: value}` (SPEC §4.2.1) is required while
+// VAR's loaded value is that value. In a contract with `roles` (SPEC §4.9),
+// DOCUCONF_ROLE names the workload's role, and an input whose `roles` leave
+// it out is optional. `includes` (SPEC §4.8) names the well-known fragments
+// whose variables the contract carries inline.
 #pragma once
 
 #include <functional>
@@ -43,6 +49,20 @@ struct FileValue {
     nlohmann::json document;   // config: the parsed data
     std::size_t certificates = 0;  // caBundle
 };
+
+/// A conditional requirement (SPEC §4.2.1): the input is required while the
+/// variable `var` has the value `value` (a string, a 64-bit integer or a
+/// boolean).
+struct RequiredIf {
+    std::string var;
+    nlohmann::json value;
+    /// `VAR is value`, the value as JSON: `TLS_ENABLED is true`,
+    /// `LOG_FORMAT is "json"`.
+    std::string str() const;
+};
+
+/// The variable that names a workload's role in a contract with roles.
+inline constexpr const char* kRoleVar = "DOCUCONF_ROLE";
 
 /// The typed value of every variable and file input in a contract: nullopt
 /// for an optional input that is unset and has no default.
@@ -126,6 +146,16 @@ public:
     const std::vector<FileSpec>& files() const { return files_; }
     const std::vector<Overlay>& overlays() const { return overlays_; }
     const std::optional<Profiles>& profiles() const { return profiles_; }
+    /// The well-known fragments the contract includes (SPEC §4.8), as
+    /// `name@major`. Their variables are in vars(), like any other.
+    const std::vector<std::string>& includes() const { return includes_; }
+    /// The contract's roles (SPEC §4.9); empty when it has none.
+    const std::vector<std::string>& roles() const { return roles_; }
+    /// The roles that use a variable or file input; empty when every role
+    /// uses it.
+    const std::vector<std::string>& input_roles(const std::string& input) const;
+    /// A variable's or file input's requiredIf, nullptr when it has none.
+    const RequiredIf* required_if(const std::string& input) const;
 
 private:
     std::string name_;
@@ -133,6 +163,10 @@ private:
     std::vector<FileSpec> files_;
     std::vector<Overlay> overlays_;
     std::optional<Profiles> profiles_;
+    std::vector<std::string> includes_;
+    std::vector<std::string> roles_;
+    std::map<std::string, std::vector<std::string>> input_roles_;
+    std::map<std::string, RequiredIf> required_if_;
     std::function<void(const std::string&)> warn_;
 };
 
