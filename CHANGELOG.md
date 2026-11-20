@@ -4,6 +4,20 @@ All notable changes to docuconf-cpp are documented here. Entries after 0.1.0 are
 [release-please](https://github.com/googleapis/release-please) from Conventional Commit messages; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.3.0](https://github.com/Docuconf/docuconf-cpp/compare/v0.2.1...v0.3.0) (2026-11-20)
+
+
+### Features
+
+* requiredIf, roles and includes in contract-first validation ([11d7279](https://github.com/Docuconf/docuconf-cpp/commit/11d727931071464bdb97bc0e2e5514af57bbe9b0))
+* requiredIf, roles and includes in contract-first validation ([117c6c3](https://github.com/Docuconf/docuconf-cpp/commit/117c6c3c303c54fbb413612479d16341a79ec554))
+
+
+### Documentation
+
+* add the shop example (roles, requiredIf, fragments) ([8b55901](https://github.com/Docuconf/docuconf-cpp/commit/8b55901ff47f52f437dcf3996febcd70a0265650))
+* add the shop example (roles, requiredIf, fragments) ([161feaa](https://github.com/Docuconf/docuconf-cpp/commit/161feaa0452e3021531693afc1d121cc12b19d24))
+
 ## [0.2.1](https://github.com/Docuconf/docuconf-cpp/compare/v0.2.0...v0.2.1) (2026-10-13)
 
 
